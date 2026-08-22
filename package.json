@@ -1,0 +1,34 @@
+{
+  "name": "hangul-coding-playground",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "smoke": "tsx scripts/smoke.ts"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.18.6",
+    "@codemirror/commands": "^6.8.1",
+    "@codemirror/language": "^6.11.0",
+    "@codemirror/lint": "^6.8.5",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.38.0",
+    "@lezer/highlight": "^1.2.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.11",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "tailwindcss": "^4.1.11",
+    "tsx": "^4.20.3",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.0"
+  }
+}

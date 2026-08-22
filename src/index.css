@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+body {
+  font-family: "Gowun Dodum", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-jua {
+  font-family: "Jua", "Gowun Dodum", sans-serif;
+}
+
+.font-code {
+  font-family: "Nanum Gothic Coding", "D2Coding", ui-monospace, monospace;
+}
+
+/* ---- 단어 짝(한글↔영어) 호버 툴팁 ---- */
+
+.cm-word-bridge {
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: #1e293b;
+  color: #f1f5f9;
+  font-family: "Gowun Dodum", sans-serif;
+  max-width: 260px;
+}
+
+.cm-word-bridge-title {
+  font-family: "Jua", "Gowun Dodum", sans-serif;
+  font-size: 16px;
+  color: #fbbf24;
+}
+
+.cm-word-bridge-desc {
+  margin-top: 2px;
+  font-size: 13px;
+  color: #cbd5e1;
+}
+
+/* CodeMirror 툴팁 껍데기의 기본 테두리 제거 */
+.cm-tooltip:has(> .cm-word-bridge) {
+  border: none !important;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.25);
+}
+
+/* ---- 미션 완료 색종이 ---- */
+
+.confetti-piece {
+  position: absolute;
+  top: -30px;
+  display: inline-block;
+  animation-name: confetti-fall;
+  animation-timing-function: ease-in;
+  animation-fill-mode: forwards;
+}
+
+@keyframes confetti-fall {
+  0% {
+    transform: translate(0, -30px) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--drift, 0px), 105vh) rotate(720deg);
+    opacity: 0.9;
+  }
+}
+
+.badge-pop {
+  animation: badge-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes badge-pop {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
