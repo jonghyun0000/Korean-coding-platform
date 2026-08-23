@@ -97,7 +97,10 @@ export interface ListLit {
 
 export interface Ident {
   kind: 'ident'
+  /** 처리에 쓰는 이름 (영어로 썼으면 한글로 정규화된 이름) */
   name: string
+  /** 아이가 실제로 친 글자 — 에러 메시지에 그대로 보여 준다 */
+  raw: string
   line: number
 }
 

@@ -1,5 +1,5 @@
 /**
- * 한글랭 ↔ 실제 코딩(영어) 단어 짝.
+ * 한글랭 ↔ 영어 단어 짝.
  * - 영어 단어로도 코드를 쓸 수 있다 (렉서가 한글 단어로 바꿔서 처리)
  * - 에디터에서 단어에 마우스를 올리면 짝이 되는 단어를 보여준다
  */
@@ -34,11 +34,16 @@ export const EN_TO_KO: Record<string, string> = {
   // 거북이
   turtle: '캐릭터',
   forward: '앞으로',
+  fd: '앞으로',
   back: '뒤로',
   backward: '뒤로',
+  bk: '뒤로',
   right: '오른쪽',
+  rt: '오른쪽',
   left: '왼쪽',
+  lt: '왼쪽',
   color: '색깔',
+  pencolor: '색깔',
   penup: '펜올리기',
   pendown: '펜내리기',
   width: '굵기',
@@ -78,4 +83,20 @@ export const KO_TO_EN: Record<string, string> = {
   '펜내리기': 'pendown',
   '굵기': 'width',
   '말하기': 'say',
+}
+
+/**
+ * 파이썬과 다른 점을 정직하게 알려 주는 메모 (호버 툴팁 한 줄).
+ * 없으면 파이썬에서도 같은 단어를 쓴다는 뜻.
+ */
+export const PYTHON_NOTE: Record<string, string> = {
+  '이면': '파이썬에는 then 이 없어요. 파이썬은 if 조건: 처럼 콜론을 써요.',
+  '부터': '파이썬에서는 for i in range(1, 6) 처럼 써요.',
+  '끝': '파이썬에는 end 가 없어요. 들여쓰기로 블록을 끝내요.',
+  '말하기': '파이썬 turtle 에서는 write() 를 써요.',
+  '굵기': '파이썬 turtle 에서는 pensize() 라고도 해요.',
+  '앞으로': '파이썬 turtle 도 forward() 로 같아요.',
+  '출력': '파이썬도 print() 로 같아요.',
+  '만약': '파이썬도 if 로 같아요.',
+  '함수': '파이썬도 def 로 같아요.',
 }

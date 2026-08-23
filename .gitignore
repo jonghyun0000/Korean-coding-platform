@@ -2,3 +2,8 @@ node_modules
 dist
 .DS_Store
 *.local
+
+# macOS가 exFAT/네트워크 드라이브에 만드는 메타데이터 파일
+._*
+.Spotlight-V100
+.Trashes

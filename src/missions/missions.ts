@@ -1,4 +1,6 @@
 import type { Effect } from '../lang/interpreter'
+import { tokenize } from '../lang/lexer'
+import { runProgram } from '../lang/run'
 import type { EmojiName } from '../ui/emoji'
 
 // ---- 교재(레슨) 구조: 개념 → 따라하기 → 실수 → 퀴즈 → 도전 ----
@@ -14,6 +16,8 @@ export interface Mistake {
   bad: string
   good: string
   why: string
+  /** 코드가 아니라 문장으로 쓴 항목이면 false (취소선 없이 보여 준다) */
+  isCode?: boolean
 }
 
 export interface Quiz {
@@ -22,6 +26,8 @@ export interface Quiz {
   /** 정답 번호 (0부터) */
   answer: number
   explain: string
+  /** 선택지별 오답 설명 (정답 자리는 비워 둠) */
+  wrongExplain?: string[]
 }
 
 export interface Challenge {
@@ -47,6 +53,8 @@ export interface Lesson {
 export interface MissionCheckInput {
   code: string
   effects: Effect[]
+  /** 이 미션의 시작 코드 — 손대지 않고 실행만 한 경우를 걸러내기 위해 */
+  starterCode: string
 }
 
 export interface Mission {
@@ -66,10 +74,56 @@ export interface Mission {
   check: (input: MissionCheckInput) => boolean
 }
 
-const printCount = (effects: Effect[]) => effects.filter((e) => e.kind === 'print').length
+// ---- 판정 도우미 ----
+// 주석·문자열 속 글자에 속지 않도록 실제 토큰을 보고 판단한다.
+
+/** 코드에 실제로 쓰인 키워드 집합 (주석/문자열 제외) */
+function keywordsIn(code: string): Set<string> {
+  try {
+    return new Set(tokenize(code).filter((t) => t.type === 'keyword').map((t) => t.value))
+  } catch {
+    return new Set()
+  }
+}
+
+/** 코드에 해당 기호가 실제로 쓰였는지 (주석/문자열 제외) */
+function hasOp(code: string, op: string): boolean {
+  try {
+    return tokenize(code).some((t) => t.type === 'op' && t.value === op)
+  } catch {
+    return false
+  }
+}
+
+/** 변수에 값을 넣는 문장이 있는지 */
+function hasAssignment(code: string): boolean {
+  try {
+    const ts = tokenize(code)
+    return ts.some((t, i) => t.type === 'ident' && ts[i + 1]?.type === 'op' && ts[i + 1].value === '=')
+  } catch {
+    return false
+  }
+}
+
+const printTexts = (effects: Effect[]) =>
+  effects.filter((e) => e.kind === 'print').map((e) => (e as Extract<Effect, { kind: 'print' }>).text)
+const sayTexts = (effects: Effect[]) =>
+  effects.filter((e) => e.kind === 'say').map((e) => (e as Extract<Effect, { kind: 'say' }>).text)
 const moves = (effects: Effect[]) => effects.filter((e) => e.kind === 'move')
 const turns = (effects: Effect[]) => effects.filter((e) => e.kind === 'turn') as Extract<Effect, { kind: 'turn' }>[]
-const usedColors = (effects: Effect[]) => new Set(effects.filter((e) => e.kind === 'color').map((e) => (e as Extract<Effect, { kind: 'color' }>).color))
+const usedColors = (effects: Effect[]) =>
+  new Set(effects.filter((e) => e.kind === 'color').map((e) => (e as Extract<Effect, { kind: 'color' }>).color))
+
+/** 시작 코드를 그대로 실행했을 때의 출력 (미션마다 한 번만 계산) */
+const starterOutputCache = new Map<string, string>()
+function starterPrints(starterCode: string): string {
+  const cached = starterOutputCache.get(starterCode)
+  if (cached !== undefined) return cached
+  const r = runProgram(starterCode)
+  const key = r.ok ? JSON.stringify(printTexts(r.effects)) : '__error__'
+  starterOutputCache.set(starterCode, key)
+  return key
+}
 
 export const MISSIONS: Mission[] = [
   // ================================================================
@@ -79,7 +133,7 @@ export const MISSIONS: Mission[] = [
     emoji: 'waving_hand',
     title: '첫 출력 — 컴퓨터에게 말 시키기',
     description: '출력( )은 컴퓨터에게 "이 말을 화면에 보여줘!"라고 시키는 첫 번째 명령이에요.',
-    goal: '출력( )으로 인사말을 화면에 보여주면 성공!',
+    goal: '출력( ) 안의 말을 내 말로 바꿔서 화면에 보여주면 성공!',
     exampleCode: `출력("안녕하세요!")
 출력("나는 코딩을 배우고 있어요")
 캐릭터.말하기("반가워!")`,
@@ -133,6 +187,11 @@ export const MISSIONS: Mission[] = [
         choices: ['출력(사과)', '출력("사과")', '사과 출력하기'],
         answer: 1,
         explain: '글자는 꼭 따옴표 " " 로 감싸야 해요. 따옴표가 없으면 컴퓨터는 사과라는 이름의 상자를 찾아요!',
+        wrongExplain: [
+          '따옴표가 없어요. 이렇게 쓰면 컴퓨터는 사과라는 이름의 상자를 찾다가 "그런 이름 없어요"라고 해요.',
+          '',
+          '컴퓨터는 우리말 문장을 알아듣지 못해요. 정해진 명령 모양(출력( ))으로 써야 해요.',
+        ],
       },
       challenges: [
         {
@@ -145,7 +204,11 @@ export const MISSIONS: Mission[] = [
         },
       ],
     },
-    check: ({ effects }) => printCount(effects) >= 1 || effects.some((e) => e.kind === 'say'),
+    // 시작 코드의 자리표시자를 그대로 두고 실행만 한 경우는 완료가 아니다
+    check: ({ effects }) => {
+      const texts = [...printTexts(effects), ...sayTexts(effects)]
+      return texts.some((t) => t.trim() !== '' && t.trim() !== '여기를 바꿔 보세요')
+    },
   },
   // ================================================================
   {
@@ -154,7 +217,7 @@ export const MISSIONS: Mission[] = [
     emoji: 'raising_hand',
     title: '변수 — 이름표 붙은 상자',
     description: '변수는 값을 담아두는 이름표 붙은 상자예요. 담아두면 언제든 꺼내 쓸 수 있어요.',
-    goal: '이름과 나이를 변수에 담아 자기소개를 출력하면 성공!',
+    goal: '이름과 나이를 내 것으로 바꿔서, 변수를 쓴 자기소개를 두 줄 이상 출력하면 성공!',
     exampleCode: `이름 = "민준"
 나이 = 10
 
@@ -185,9 +248,10 @@ export const MISSIONS: Mission[] = [
           why: '글자를 넣을 땐 따옴표가 필요해요. 없으면 민준이라는 다른 상자를 찾아요.',
         },
         {
-          bad: '출력(키)  ← 키 상자를 만든 적이 없음',
-          good: '키 = 140 을 먼저 쓰고 → 출력(키)',
+          bad: '상자를 만들기 전에 먼저 부르기',
+          good: '키 = 140 을 먼저 쓴 다음 출력(키)',
           why: '상자에 값을 넣기 전에는 부를 수 없어요. 만들기가 먼저!',
+          isCode: false,
         },
       ],
       summary: '이름 = 값 → 상자에 넣기 / 이름 부르기 → 꺼내 쓰기!',
@@ -223,6 +287,11 @@ export const MISSIONS: Mission[] = [
         choices: ['10', '11', '나이 + 1 이라는 글자'],
         answer: 1,
         explain: '오른쪽을 먼저 계산해요: 10 + 1 = 11. 그 값을 다시 나이 상자에 넣으니 11이 돼요!',
+        wrongExplain: [
+          '= 는 "넣어라"는 뜻이라, 계산한 값 11이 상자에 새로 들어가요. 10은 사라져요.',
+          '',
+          '따옴표가 없으니 글자가 아니에요. 컴퓨터는 나이 상자를 꺼내 계산부터 해요.',
+        ],
       },
       challenges: [
         {
@@ -235,7 +304,12 @@ export const MISSIONS: Mission[] = [
         },
       ],
     },
-    check: ({ code, effects }) => printCount(effects) >= 2 && /[A-Za-z가-힣_][A-Za-z0-9가-힣_]*\s*=[^=]/.test(code),
+    check: ({ code, effects }) => {
+      const texts = printTexts(effects)
+      return texts.length >= 2
+        && hasAssignment(code)
+        && !texts.some((t) => t.includes('여기에 이름'))
+    },
   },
   // ================================================================
   {
@@ -244,7 +318,7 @@ export const MISSIONS: Mission[] = [
     emoji: 'direct_hit',
     title: '조건문 — 갈림길에서 고르기',
     description: '조건문은 갈림길이에요. 조건이 참이면 이쪽 길, 거짓이면 저쪽 길로 가요.',
-    goal: '만약 / 아니면 을 써서 추측이 맞는지 알려주면 성공!',
+    goal: '만약 / 아니면 을 쓰고, 값을 바꿔서 다른 길로 가 보면 성공!',
     exampleCode: `정답 = 7
 추측 = 5
 
@@ -274,6 +348,7 @@ export const MISSIONS: Mission[] = [
         '같은지 물어볼 땐 == 를 써요. = (상자에 넣기)와 완전히 달라요!',
         '크기 비교는 > < >= <= , 다른지 물어볼 땐 != 를 써요.',
         '아니면 만약 으로 갈림길을 더 만들고, 아니면 은 나머지 모든 경우예요.',
+        '조건 두 개를 한꺼번에 볼 때는 그리고 · 또는 을 써요. 예: 나이 >= 8 그리고 나이 <= 13',
       ],
       mistakes: [
         {
@@ -282,14 +357,16 @@ export const MISSIONS: Mission[] = [
           why: '= 하나는 "넣어라", == 두 개는 "같은지 물어보기"예요. 물어볼 땐 꼭 두 개!',
         },
         {
-          bad: '만약 나이 >= 10 (이면 빠짐)',
+          bad: "조건 뒤에 '이면'을 빠뜨리기",
           good: '만약 나이 >= 10 이면',
           why: '조건 뒤에는 꼭 이면 을 써야 갈림길이 시작돼요.',
+          isCode: false,
         },
         {
-          bad: '만약 ~ 이면 ... (끝 빠짐)',
-          good: '만약 ~ 이면 ... 끝',
+          bad: "블록 끝에 '끝'을 빠뜨리기",
+          good: '만약 ~ 이면 … 끝',
           why: '갈림길이 어디서 끝나는지 끝 으로 알려줘야 해요.',
+          isCode: false,
         },
       ],
       summary: '만약 조건 이면 (참일 때) ~ 아니면 (거짓일 때) ~ 끝',
@@ -313,7 +390,7 @@ export const MISSIONS: Mission[] = [
 `,
         },
         {
-          text: '아니면 만약 을 끼워 넣어 힌트를 줘요. 이제 진짜 게임 같죠?',
+          text: '아니면 만약 을 끼워 넣어 힌트를 줘요. 이제 어느 쪽으로 틀렸는지도 알 수 있어요.',
           code: `정답 = 7
 추측 = 5
 
@@ -332,19 +409,34 @@ export const MISSIONS: Mission[] = [
         choices: ['가', '나', '아무것도 안 나와요'],
         answer: 0,
         explain: '5 > 3 은 참이에요. 조건이 참이니까 위쪽 길로 가서 "가"가 나와요!',
+        wrongExplain: [
+          '',
+          '아니면 쪽은 조건이 거짓일 때만 가요. 5는 3보다 크니까 조건은 참이에요.',
+          '갈림길은 둘 중 한쪽으로 반드시 가요. 조건이 참이면 위쪽, 거짓이면 아래쪽!',
+        ],
       },
       challenges: [
         {
-          text: '추측 값을 바꿔가며 3번 안에 정답을 찾아보세요. 힌트 출력을 잘 읽으면 돼요!',
-          hint: '"더 큰 수예요!"가 나오면 더 큰 숫자로, "더 작은 수예요!"가 나오면 더 작은 숫자로.',
+          text: '정답 = 무작위(1, 10) 으로 바꾸고 여러 번 실행해 보세요. 실행할 때마다 힌트가 어떻게 달라지나요?',
+          hint: '무작위(1, 10) 은 실행할 때마다 1~10 중 아무 숫자를 골라 줘요. 추측은 그대로 두고 여러 번 실행!',
         },
         {
-          text: '짝수/홀수 판별기를 만들어 보세요. 숫자 상자를 만들고 짝수인지 홀수인지 출력!',
+          text: '나이가 8 이상 그리고 13 이하이면 "초등학생이에요"라고 출력해 보세요.',
+          hint: '만약 나이 >= 8 그리고 나이 <= 13 이면 … 끝 처럼 조건 두 개를 그리고 로 이어요.',
+        },
+        {
+          text: '짝수/홀수 판별기를 만들어 보세요.',
           hint: '만약 숫자 % 2 == 0 이면 짝수예요. %는 나눈 나머지를 구해요.',
         },
       ],
     },
-    check: ({ code, effects }) => printCount(effects) >= 1 && code.includes('만약') && code.includes('이면'),
+    // 만약을 쓰고, 시작 코드와는 다른 결과가 나와야 완료
+    check: ({ code, effects, starterCode }) => {
+      const texts = printTexts(effects)
+      return keywordsIn(code).has('만약')
+        && texts.length >= 1
+        && JSON.stringify(texts) !== starterPrints(starterCode)
+    },
   },
   // ================================================================
   {
@@ -353,7 +445,7 @@ export const MISSIONS: Mission[] = [
     emoji: 'blue_square',
     title: '반복문 — 정사각형 그리기',
     description: '같은 일을 4번 쓰는 대신 "4번 반복해!" 한마디로 시키는 게 반복문이에요.',
-    goal: '반복문으로 네 변을 그려 정사각형을 완성하면 성공!',
+    goal: '반복문 안에 그리기 명령을 넣어 정사각형을 완성하면 성공!',
     exampleCode: `캐릭터.색깔("파랑")
 캐릭터.굵기(4)
 
@@ -379,21 +471,24 @@ export const MISSIONS: Mission[] = [
         '반복 i = 1 부터 4 → 안쪽 코드를 4번 반복해요.',
         'i 는 지금 몇 번째인지 세는 숫자예요. 1, 2, 3, 4로 변해요.',
         '캐릭터.앞으로(100) = 100만큼 걸으며 선 긋기 / 캐릭터.오른쪽(90) = 90도 돌기',
-        '도형의 비밀: 한 바퀴는 360도! 정사각형은 360 ÷ 4 = 90도씩 4번 돌아요.',
+        '거북이는 도형 안쪽 각이 아니라, 모퉁이에서 바깥쪽으로 도는 각만큼 돌아요. 삼각형의 안쪽 각은 60도지만 거북이는 120도를 돌아요.',
+        '한 바퀴는 360도! 그래서 정다각형을 그릴 때 도는 각도는 360 ÷ 변의 수 예요.',
       ],
       mistakes: [
         {
           bad: '그리기 명령을 반복 밖(끝 다음)에 쓰기',
-          good: '반복 ~ 끝 사이(안쪽)에 쓰기',
+          good: '반복 과 끝 사이(안쪽)에 쓰기',
           why: '반복 안쪽에 있는 코드만 여러 번 실행돼요. 밖에 있으면 한 번만!',
+          isCode: false,
         },
         {
-          bad: '반복 i = 1 부터 4 ... (끝 빠짐)',
+          bad: "반복 블록에 '끝'을 빠뜨리기",
           good: '마지막 줄에 끝 쓰기',
           why: '어디까지가 반복인지 끝 으로 알려줘야 해요.',
+          isCode: false,
         },
       ],
-      summary: '반복 i = 1 부터 N ~ 끝 = N번 반복! 도형의 회전 각도 = 360 ÷ 변의 수',
+      summary: '반복 i = 1 부터 N ~ 끝 = N번 반복! 정다각형의 회전 각도 = 360 ÷ 변의 수',
       steps: [
         {
           text: '먼저 반복 없이 한 변만 그려 봐요. 거북이가 위로 걸어가며 파란 선을 그어요.',
@@ -430,7 +525,12 @@ export const MISSIONS: Mission[] = [
         question: '삼각형을 그리려면 오른쪽으로 몇 도씩 3번 돌아야 할까요?',
         choices: ['60도', '90도', '120도'],
         answer: 2,
-        explain: '360 ÷ 3 = 120! 도형을 그릴 때 도는 각도는 360도를 변의 개수로 나누면 돼요.',
+        explain: '360 ÷ 3 = 120! 도형을 그릴 때 거북이가 도는 각도는 360도를 변의 개수로 나누면 돼요.',
+        wrongExplain: [
+          '60도는 삼각형 "안쪽" 각이에요. 거북이는 모퉁이에서 바깥쪽으로 도니까 180 - 60 = 120도를 돌아요.',
+          '90도는 정사각형에서 쓰는 각도예요(360 ÷ 4). 삼각형은 360 ÷ 3 이에요.',
+          '',
+        ],
       },
       challenges: [
         {
@@ -445,10 +545,14 @@ export const MISSIONS: Mission[] = [
           text: '반복 안에 출력(i)를 넣어 i가 어떻게 변하는지 눈으로 확인해 보세요.',
           hint: '출력 창에 1, 2, 3, 4가 차례대로 나와요. i가 세고 있다는 증거!',
         },
+        {
+          text: '짝수 번째 변만 빨강으로 그려 보세요. (반복 + 만약 함께 쓰기)',
+          hint: '반복 안에 이렇게 넣어 보세요:\n만약 i % 2 == 0 이면\n    캐릭터.색깔("빨강")\n아니면\n    캐릭터.색깔("파랑")\n끝',
+        },
       ],
     },
     check: ({ code, effects }) =>
-      code.includes('반복')
+      keywordsIn(code).has('반복')
       && moves(effects).length >= 4
       && turns(effects).filter((t) => Math.abs(t.angle) === 90).length >= 3,
   },
@@ -488,9 +592,10 @@ export const MISSIONS: Mission[] = [
       ],
       mistakes: [
         {
-          bad: '오른쪽(72) — 볼록한 오각형이 됨',
-          good: '오른쪽(144) — 뾰족한 별!',
+          bad: '72도씩 5번 돌면 볼록한 오각형이 돼요',
+          good: '144도씩 5번 돌아야 뾰족한 별이 돼요',
           why: '72도씩 5번은 한 바퀴(360도)라 오각형, 144도씩 5번은 두 바퀴(720도)라 별이에요. 둘 다 직접 그려 보세요!',
+          isCode: false,
         },
       ],
       summary: '별 = 앞으로 + 오른쪽(144) 를 5번! (두 바퀴 돌기)',
@@ -531,6 +636,11 @@ export const MISSIONS: Mission[] = [
         choices: ['더 뾰족한 별', '볼록한 오각형', '정사각형'],
         answer: 1,
         explain: '72도씩 5번 = 360도 한 바퀴 = 볼록한 오각형이에요. 별이 되려면 두 바퀴(720도)를 돌아야 해요!',
+        wrongExplain: [
+          '각도를 줄이면 덜 꺾여서 오히려 볼록해져요. 별은 많이 꺾어야(144도) 나와요.',
+          '',
+          '정사각형은 90도씩 4번이에요. 여기서는 5번 반복하고 있어요.',
+        ],
       },
       challenges: [
         {
@@ -592,13 +702,15 @@ export const MISSIONS: Mission[] = [
         '함수 이름(재료) ~ 끝 : 레시피 적어 두기. 이때는 아직 실행되지 않아요!',
         '이름(값) : 레시피 실행하기. 이걸 "함수를 부른다(호출)"고 해요.',
         '괄호 속 재료(크기)는 함수 안에서 변수처럼 쓰여요.',
+        '펜올리기() → 이동 → 펜내리기() 는 선을 그리지 않고 자리만 옮기는 방법이에요.',
         '반환 을 쓰면 계산 결과를 돌려줄 수도 있어요. 예: 반환 a + b',
       ],
       mistakes: [
         {
-          bad: '함수만 만들고 부르지 않기',
-          good: '함수 정의 뒤에 정사각형(50) 으로 부르기',
+          bad: '함수를 만들기만 하고 부르지 않기',
+          good: '함수 정의 아래에 정사각형(50) 이라고 불러 주기',
           why: '레시피를 적기만 하면 요리는 안 나와요. 이름을 불러야 실행돼요!',
+          isCode: false,
         },
         {
           bad: '정사각형 50',
@@ -659,6 +771,11 @@ export const MISSIONS: Mission[] = [
         choices: ['안녕', '아무것도 안 나와요', '인사'],
         answer: 1,
         explain: '함수는 만들기만 하면 실행되지 않아요! 아래에 인사() 라고 불러야 "안녕"이 나와요.',
+        wrongExplain: [
+          '레시피를 적어 둔 것뿐이에요. 이름을 불러야(인사()) 그때 실행돼요.',
+          '',
+          '함수 이름은 화면에 나오지 않아요. 출력( ) 안에 넣은 것만 나와요.',
+        ],
       },
       challenges: [
         {
@@ -669,9 +786,13 @@ export const MISSIONS: Mission[] = [
           text: '정사각형을 크기 30, 60, 90으로 세 개 그려 보세요.',
           hint: '한 번 그린 뒤 펜올리기() → 이동 → 펜내리기() → 다시 부르기!',
         },
+        {
+          text: '값을 돌려주는 함수도 만들어 보세요. 두 수를 더해서 돌려주는 함수예요.',
+          hint: '함수 더하기(a, b)\n    반환 a + b\n끝\n출력(더하기(3, 4))\n— 반환 은 계산 결과를 돌려줘요.',
+        },
       ],
     },
-    check: ({ code, effects }) => code.includes('함수') && moves(effects).length >= 8,
+    check: ({ code, effects }) => keywordsIn(code).has('함수') && moves(effects).length >= 8,
   },
   // ================================================================
   {
@@ -708,17 +829,19 @@ export const MISSIONS: Mission[] = [
         '칸 번호는 0부터! 색깔들[0] = 첫 칸, 색깔들[1] = 둘째 칸.',
         '길이(색깔들) = 칸의 개수 / 추가(색깔들, 값) = 맨 뒤 칸에 태우기.',
         '반복의 i를 칸 번호로 쓰면 매번 다른 칸을 꺼내요. 그래서 반복 i = 0 부터 4!',
+        '0부터 4까지는 0, 1, 2, 3, 4 — 모두 다섯 번이에요. (5칸 기차와 딱 맞아요)',
       ],
       mistakes: [
         {
-          bad: '첫 번째 칸이 색깔들[1]인 줄 알기',
+          bad: '첫 번째 칸을 색깔들[1] 이라고 생각하기',
           good: '첫 번째 칸은 색깔들[0]',
           why: '컴퓨터는 0부터 세요. 5칸 기차의 마지막 칸은 [4]예요!',
+          isCode: false,
         },
         {
-          bad: '색깔들[5]  ← 5칸 기차에서',
+          bad: '색깔들[5]',
           good: '색깔들[0] ~ 색깔들[4] 까지만',
-          why: '없는 칸을 부르면 "그런 칸이 없어요" 에러가 나요.',
+          why: '5칸 기차에는 5번 칸이 없어요. 없는 칸을 부르면 "그런 칸이 없어요" 에러가 나요.',
         },
       ],
       summary: '리스트 = 값들의 기차. 첫 칸은 [0]! 반복의 i와 최고의 짝꿍!',
@@ -761,11 +884,20 @@ export const MISSIONS: Mission[] = [
         choices: ['사과', '포도', '딸기'],
         answer: 1,
         explain: '0번 칸이 사과, 1번 칸이 포도! 컴퓨터는 0부터 세니까요.',
+        wrongExplain: [
+          '사과는 0번 칸이에요. 컴퓨터는 1이 아니라 0부터 세요.',
+          '',
+          '딸기는 2번 칸이에요. 0=사과, 1=포도, 2=딸기!',
+        ],
       },
       challenges: [
         {
           text: '색 6개를 태운 리스트로 무지개 육각형을 그려 보세요.',
           hint: '반복 i = 0 부터 5, 오른쪽(60)! 리스트에도 색이 6개 있어야 해요.',
+        },
+        {
+          text: '추가( )로 색을 하나 더 태우고, 길이( )로 칸 수를 세어 출력해 보세요.',
+          hint: '추가(색깔들, "보라") 를 쓴 다음 출력("칸 수:", 길이(색깔들))',
         },
         {
           text: '좋아하는 것들 리스트를 만들어 반복으로 하나씩 출력해 보세요.',
@@ -774,7 +906,7 @@ export const MISSIONS: Mission[] = [
       ],
     },
     check: ({ code, effects }) =>
-      code.includes('[') && moves(effects).length >= 3 && usedColors(effects).size >= 3,
+      hasOp(code, '[') && moves(effects).length >= 3 && usedColors(effects).size >= 3,
   },
   // ================================================================
   {
@@ -814,6 +946,7 @@ export const MISSIONS: Mission[] = [
           bad: '한꺼번에 여러 숫자를 다 바꾸기',
           good: '하나만 바꾸고 실행해서 관찰하기',
           why: '한 번에 하나씩 바꿔야 그 숫자가 무슨 일을 하는지 배울 수 있어요.',
+          isCode: false,
         },
       ],
       summary: '작은 변화 → 실행 → 관찰! 이게 진짜 코딩 공부예요.',
@@ -862,6 +995,11 @@ export const MISSIONS: Mission[] = [
         choices: ['같은 자리를 맴돌아요', '점점 커지는 나선', '아무것도 안 그려져요'],
         answer: 1,
         explain: '처음엔 짧게, 갈수록 길게 걸으니까 바깥으로 퍼지는 나선이 돼요!',
+        wrongExplain: [
+          '거리가 매번 같을 때 제자리로 돌아와요. 여기서는 i가 커지며 거리도 커져요.',
+          '',
+          'i가 0일 때만 0만큼 걸어요. 그다음부터는 4, 8, 12…로 점점 길어져요.',
+        ],
       },
       challenges: [
         {

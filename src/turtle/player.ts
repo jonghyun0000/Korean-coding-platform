@@ -19,7 +19,10 @@ interface Segment {
 
 const DEFAULT_COLOR = '#334155'
 const DEFAULT_WIDTH = 3
-const INSTANT_BATCH = 300 // 한 프레임에 처리할 즉시 효과(출력 등) 최대 개수
+const INSTANT_BATCH = 300      // 한 프레임에 처리할 즉시 효과(출력 등) 최대 개수
+const MAX_DONE_PER_FRAME = 200 // 한 프레임에 완료할 이동/회전 최대 개수
+const CATCH_UP_MS = 250        // 프레임이 오래 멈췄을 때 따라잡기 한계
+const TOTAL_BUDGET_MS = 12_000 // 전체 재생이 이보다 길면 비율을 줄여 빠르게
 
 /**
  * 효과 목록을 캔버스 위에서 애니메이션으로 재생하는 거북이 그래픽 플레이어.
@@ -38,6 +41,8 @@ export class TurtlePlayer {
   private width = DEFAULT_WIDTH
   private segments: Segment[] = []
   private bubble: string | null = null
+  /** 중앙에서 가장 멀리 나간 거리 — 그림이 화면 밖으로 나가면 자동으로 줄여 보여 준다 */
+  private extent = 0
 
   // 재생 상태
   private effects: Effect[] = []
@@ -48,6 +53,7 @@ export class TurtlePlayer {
   private initedIndex = -1 // 시작 처리를 마친 효과 번호
   private moveFrom = { x: 0, y: 0 }
   private turnFrom = 0
+  private timeScale = 1 // 전체가 너무 길면 1보다 커진다
   private callbacks: PlayCallbacks | null = null
   playing = false
   speed = 1
@@ -88,6 +94,21 @@ export class TurtlePlayer {
     }
   }
 
+  /** 속도를 바꾸되, 지금 하던 동작의 진행률은 그대로 유지한다 */
+  setSpeed(next: number) {
+    const effect = this.effects[this.index]
+    if (this.playing && effect && this.effectStart !== 0 && this.initedIndex === this.index) {
+      const oldDur = this.duration(effect)
+      const now = performance.now()
+      const progress = oldDur > 0 ? Math.min(1, (now - this.effectStart) / oldDur) : 1
+      this.speed = next
+      const newDur = this.duration(effect)
+      this.effectStart = now - progress * newDur
+    } else {
+      this.speed = next
+    }
+  }
+
   private resetState() {
     this.x = 0
     this.y = 0
@@ -97,9 +118,11 @@ export class TurtlePlayer {
     this.width = DEFAULT_WIDTH
     this.segments = []
     this.bubble = null
+    this.extent = 0
     this.index = 0
     this.initedIndex = -1
     this.effectStart = 0
+    this.timeScale = 1
   }
 
   play(effects: Effect[], callbacks: PlayCallbacks) {
@@ -108,7 +131,38 @@ export class TurtlePlayer {
     this.effects = effects
     this.callbacks = callbacks
     this.playing = true
+    // 전체 재생이 너무 길어지면(원 그리기 등) 비율을 줄여 12초 안쪽으로 맞춘다
+    let total = 0
+    for (const e of effects) total += this.rawDuration(e)
+    this.timeScale = total > TOTAL_BUDGET_MS ? total / TOTAL_BUDGET_MS : 1
     this.scheduleStep()
+  }
+
+  /** 남은 그림을 한 번에 완성한다 (기다리기 지루할 때) */
+  finishNow() {
+    if (!this.playing) return
+    const cb = this.callbacks!
+    while (this.index < this.effects.length) {
+      const effect = this.effects[this.index]
+      if (effect.kind === 'move' || effect.kind === 'turn') {
+        if (this.initedIndex !== this.index) {
+          if (effect.kind === 'move') this.moveFrom = { x: this.x, y: this.y }
+          if (effect.kind === 'turn') this.turnFrom = this.heading
+        }
+      }
+      this.applyInstant(effect, cb)
+      this.index++
+      this.initedIndex = -1
+    }
+    this.render()
+    this.playing = false
+    if (this.raf) cancelAnimationFrame(this.raf)
+    this.raf = 0
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = null
+    cb.onLine(null)
+    this.callbacks = null
+    cb.onDone()
   }
 
   /**
@@ -131,19 +185,72 @@ export class TurtlePlayer {
     if (this.playing) this.scheduleStep()
   }
 
+  /** 속도/전체 길이 보정 전의 기본 소요 시간 */
+  private rawDuration(effect: Effect): number {
+    switch (effect.kind) {
+      case 'move': return Math.min(600, Math.max(120, Math.abs(effect.dist) * 2.4))
+      case 'turn': return Math.min(320, Math.max(90, Math.abs(effect.angle) * 1.4))
+      case 'say': return 950
+      default: return 0
+    }
+  }
+
   private duration(effect: Effect): number {
     const speed = Math.max(0.2, this.speed)
+    const d = this.rawDuration(effect) / speed / this.timeScale
+    return Math.max(16, d)
+  }
+
+  /** 중앙에서 얼마나 멀리 갔는지 기록 (자동 축소용) */
+  private noteExtent(x: number, y: number) {
+    const r = Math.max(Math.abs(x), Math.abs(y))
+    if (r > this.extent) this.extent = r
+  }
+
+  /** 효과를 즉시(끝난 상태로) 반영 */
+  private applyInstant(effect: Effect, cb: PlayCallbacks) {
     switch (effect.kind) {
-      case 'move': return Math.min(600, Math.max(120, Math.abs(effect.dist) * 2.4)) / speed
-      case 'turn': return Math.min(320, Math.max(90, Math.abs(effect.angle) * 1.4)) / speed
-      case 'say': return 950 / speed
-      default: return 0
+      case 'print':
+        cb.onPrint(effect.text)
+        return
+      case 'color':
+        this.color = effect.color
+        return
+      case 'pen':
+        this.penDown = effect.down
+        return
+      case 'width':
+        this.width = effect.width
+        return
+      case 'say':
+        this.bubble = effect.text
+        return
+      case 'turn':
+        this.heading = this.turnFrom + effect.angle
+        return
+      case 'move': {
+        const rad = (this.heading * Math.PI) / 180
+        const endX = this.moveFrom.x + Math.sin(rad) * effect.dist
+        const endY = this.moveFrom.y - Math.cos(rad) * effect.dist
+        this.x = endX
+        this.y = endY
+        this.noteExtent(endX, endY)
+        if (this.penDown) {
+          this.segments.push({
+            x1: this.moveFrom.x, y1: this.moveFrom.y,
+            x2: endX, y2: endY,
+            color: this.color, width: this.width,
+          })
+        }
+        return
+      }
     }
   }
 
   private advance(ts: number) {
     const cb = this.callbacks!
     let instantBudget = INSTANT_BATCH
+    let doneBudget = MAX_DONE_PER_FRAME
 
     while (this.index < this.effects.length) {
       const effect = this.effects[this.index]
@@ -152,10 +259,7 @@ export class TurtlePlayer {
       if (effect.kind === 'print' || effect.kind === 'color' || effect.kind === 'pen' || effect.kind === 'width') {
         if (instantBudget-- <= 0) return
         cb.onLine(effect.line)
-        if (effect.kind === 'print') cb.onPrint(effect.text)
-        else if (effect.kind === 'color') this.color = effect.color
-        else if (effect.kind === 'pen') this.penDown = effect.down
-        else this.width = effect.width
+        this.applyInstant(effect, cb)
         this.index++
         continue
       }
@@ -163,9 +267,9 @@ export class TurtlePlayer {
       // 시간이 걸리는 효과 — 처음 만나면 시작 처리
       if (this.initedIndex !== this.index) {
         this.initedIndex = this.index
-        // 이전 효과에서 이월된 시작 시각이 너무 과거면 보정 (프레임이 뜸한 환경 대비)
+        // 프레임이 오래 멈춰 있었으면 너무 많이 따라잡지 않도록 제한
         if (this.effectStart === 0) this.effectStart = ts
-        else this.effectStart = Math.max(this.effectStart, ts - this.duration(effect))
+        else this.effectStart = Math.max(this.effectStart, ts - CATCH_UP_MS)
         cb.onLine(effect.line)
         if (effect.kind === 'move') this.moveFrom = { x: this.x, y: this.y }
         if (effect.kind === 'turn') this.turnFrom = this.heading
@@ -177,33 +281,16 @@ export class TurtlePlayer {
 
       if (effect.kind === 'move') {
         const rad = (this.heading * Math.PI) / 180
-        const dx = Math.sin(rad) * effect.dist
-        const dy = -Math.cos(rad) * effect.dist
-        this.x = this.moveFrom.x + dx * eased
-        this.y = this.moveFrom.y + dy * eased
+        this.x = this.moveFrom.x + Math.sin(rad) * effect.dist * eased
+        this.y = this.moveFrom.y - Math.cos(rad) * effect.dist * eased
       } else if (effect.kind === 'turn') {
         this.heading = this.turnFrom + effect.angle * eased
       }
 
       if (t < 1) return // 다음 프레임에서 계속
+      if (doneBudget-- <= 0) return // 한 프레임에 너무 많이 처리하지 않기
 
-      // 효과 완료
-      if (effect.kind === 'move') {
-        const rad = (this.heading * Math.PI) / 180
-        const endX = this.moveFrom.x + Math.sin(rad) * effect.dist
-        const endY = this.moveFrom.y - Math.cos(rad) * effect.dist
-        this.x = endX
-        this.y = endY
-        if (this.penDown) {
-          this.segments.push({
-            x1: this.moveFrom.x, y1: this.moveFrom.y,
-            x2: endX, y2: endY,
-            color: this.color, width: this.width,
-          })
-        }
-      } else if (effect.kind === 'turn') {
-        this.heading = this.turnFrom + effect.angle
-      }
+      this.applyInstant(effect, cb)
       this.index++
       // 남은 시간을 다음 효과로 이월해서, 프레임이 드물어도 벽시계 속도 유지
       this.effectStart += dur
@@ -233,32 +320,38 @@ export class TurtlePlayer {
     // 은은한 모눈 배경
     ctx.strokeStyle = 'rgba(148, 163, 184, 0.15)'
     ctx.lineWidth = 1
+    ctx.beginPath()
     const grid = 25
     for (let gx = (w / 2) % grid; gx < w; gx += grid) {
-      ctx.beginPath()
       ctx.moveTo(gx, 0)
       ctx.lineTo(gx, h)
-      ctx.stroke()
     }
     for (let gy = (h / 2) % grid; gy < h; gy += grid) {
-      ctx.beginPath()
       ctx.moveTo(0, gy)
       ctx.lineTo(w, gy)
-      ctx.stroke()
     }
+    ctx.stroke()
 
     const cx = w / 2
     const cy = h / 2
 
-    // 그려진 선들
+    // 그림이 화면 밖으로 나가면 전체를 줄여서 보여 준다
+    const half = Math.min(w, h) / 2 - 24
+    const liveExtent = Math.max(this.extent, Math.abs(this.x), Math.abs(this.y))
+    const scale = liveExtent > half && half > 0 ? Math.max(0.2, half / liveExtent) : 1
+
+    ctx.save()
+    ctx.translate(cx, cy)
+    ctx.scale(scale, scale)
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
+    const minWidth = 1.5 / scale
     for (const s of this.segments) {
       ctx.strokeStyle = s.color
-      ctx.lineWidth = s.width
+      ctx.lineWidth = Math.max(s.width, minWidth)
       ctx.beginPath()
-      ctx.moveTo(cx + s.x1, cy + s.y1)
-      ctx.lineTo(cx + s.x2, cy + s.y2)
+      ctx.moveTo(s.x1, s.y1)
+      ctx.lineTo(s.x2, s.y2)
       ctx.stroke()
     }
 
@@ -267,16 +360,29 @@ export class TurtlePlayer {
       const effect = this.effects[this.index]
       if (effect && effect.kind === 'move' && this.effectStart !== 0) {
         ctx.strokeStyle = this.color
-        ctx.lineWidth = this.width
+        ctx.lineWidth = Math.max(this.width, minWidth)
         ctx.beginPath()
-        ctx.moveTo(cx + this.moveFrom.x, cy + this.moveFrom.y)
-        ctx.lineTo(cx + this.x, cy + this.y)
+        ctx.moveTo(this.moveFrom.x, this.moveFrom.y)
+        ctx.lineTo(this.x, this.y)
         ctx.stroke()
       }
     }
+    ctx.restore()
 
-    this.drawTurtle(ctx, cx + this.x, cy + this.y, this.heading)
-    if (this.bubble) this.drawBubble(ctx, cx + this.x, cy + this.y, this.bubble, w)
+    // 거북이와 말풍선은 줄이지 않고 원래 크기로
+    const px = cx + this.x * scale
+    const py = cy + this.y * scale
+    this.drawTurtle(ctx, px, py, this.heading)
+    if (this.bubble) this.drawBubble(ctx, px, py, this.bubble, w)
+
+    // 축소해서 보여 주는 중이라고 알려 주기
+    if (scale < 1) {
+      ctx.save()
+      ctx.font = '12px "Gowun Dodum", sans-serif'
+      ctx.fillStyle = 'rgba(71, 85, 105, 0.75)'
+      ctx.fillText(`그림이 커서 ${Math.round(scale * 100)}% 크기로 보여 주고 있어요`, 10, h - 10)
+      ctx.restore()
+    }
   }
 
   /** 귀여운 아기 거북이 */
@@ -343,31 +449,56 @@ export class TurtlePlayer {
     ctx.restore()
   }
 
-  /** 말풍선 */
+  /** 말풍선 (띄어쓰기가 없는 한국어도 글자 단위로 줄바꿈) */
   private drawBubble(ctx: CanvasRenderingContext2D, px: number, py: number, text: string, canvasW: number) {
     ctx.save()
     ctx.font = '15px "Jua", "Gowun Dodum", sans-serif'
 
-    // 줄 나누기 (최대 폭 170px)
     const maxWidth = 170
-    const words = text.split(' ')
+    const maxLines = 6
     const lines: string[] = []
     let current = ''
-    for (const word of words) {
-      const trial = current ? current + ' ' + word : word
-      if (ctx.measureText(trial).width > maxWidth && current) {
-        lines.push(current)
-        current = word
-      } else {
-        current = trial
-      }
+
+    const pushLine = () => {
+      if (current) lines.push(current)
+      current = ''
     }
-    if (current) lines.push(current)
+
+    for (const word of text.split(' ')) {
+      const trial = current ? current + ' ' + word : word
+      if (ctx.measureText(trial).width <= maxWidth) {
+        current = trial
+        continue
+      }
+      pushLine()
+      // 한 낱말이 너무 길면 글자 단위로 쪼갠다
+      if (ctx.measureText(word).width <= maxWidth) {
+        current = word
+        continue
+      }
+      let chunk = ''
+      for (const ch of word) {
+        if (ctx.measureText(chunk + ch).width > maxWidth && chunk) {
+          lines.push(chunk)
+          chunk = ch
+          if (lines.length >= maxLines) break
+        } else {
+          chunk += ch
+        }
+      }
+      current = chunk
+      if (lines.length >= maxLines) break
+    }
+    pushLine()
+
+    let shown = lines.slice(0, maxLines)
+    if (lines.length > maxLines) shown = [...shown.slice(0, maxLines - 1), shown[maxLines - 1] + '…']
+    if (shown.length === 0) shown = ['']
 
     const lineHeight = 20
     const padding = 10
-    const bw = Math.min(maxWidth, Math.max(...lines.map((l) => ctx.measureText(l).width))) + padding * 2
-    const bh = lines.length * lineHeight + padding * 2 - 4
+    const bw = Math.min(maxWidth, Math.max(...shown.map((l) => ctx.measureText(l).width))) + padding * 2
+    const bh = shown.length * lineHeight + padding * 2 - 4
 
     let bx = px + 18
     let by = py - 30 - bh
@@ -396,7 +527,7 @@ export class TurtlePlayer {
 
     // 글자
     ctx.fillStyle = '#334155'
-    lines.forEach((l, i) => {
+    shown.forEach((l, i) => {
       ctx.fillText(l, bx + padding, by + padding + 12 + i * lineHeight)
     })
     ctx.restore()

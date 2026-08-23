@@ -5,7 +5,10 @@ export type TokenType = 'number' | 'string' | 'ident' | 'keyword' | 'op' | 'newl
 
 export interface Token {
   type: TokenType
+  /** 처리에 쓰는 값 (영어 단어는 한글로 정규화된 값) */
   value: string
+  /** 아이가 실제로 친 글자 — 에러 메시지에 그대로 보여 주기 위해 보관 */
+  raw: string
   line: number
 }
 
@@ -32,7 +35,8 @@ export function tokenize(src: string): Token[] {
   let line = 1
   let bracketDepth = 0 // 괄호/대괄호 안에서는 줄바꿈을 무시 (여러 줄 리스트 허용)
 
-  const push = (type: TokenType, value: string) => tokens.push({ type, value, line })
+  const push = (type: TokenType, value: string, raw = value) =>
+    tokens.push({ type, value, raw, line })
 
   while (i < src.length) {
     const ch = src[i]
@@ -88,7 +92,7 @@ export function tokenize(src: string): Token[] {
       if (!closed) {
         throw new KidError(`따옴표(${quote})를 열었는데 닫지 않았어요. 글자 끝에 ${quote} 를 붙여 주세요.`, startLine)
       }
-      tokens.push({ type: 'string', value: str, line: startLine })
+      tokens.push({ type: 'string', value: str, raw: str, line: startLine })
       continue
     }
 
@@ -115,7 +119,7 @@ export function tokenize(src: string): Token[] {
       continue
     }
 
-    // 이름 (변수/키워드) — 영어 단어는 짝이 되는 한글 단어로 바꿔서 처리
+    // 이름 (변수/키워드) — 영어 단어는 짝이 되는 한글 단어로 바꿔서 처리하되 원문(raw)은 보관
     if (IDENT_START.test(ch)) {
       let word = ''
       while (i < src.length && IDENT_PART.test(src[i])) {
@@ -123,12 +127,12 @@ export function tokenize(src: string): Token[] {
         i++
       }
       if (word === 'elif') {
-        push('keyword', '아니면')
-        push('keyword', '만약')
+        push('keyword', '아니면', 'elif')
+        push('keyword', '만약', 'elif')
         continue
       }
       const normalized = EN_TO_KO[word] ?? word
-      push(KEYWORDS.has(normalized) ? 'keyword' : 'ident', normalized)
+      push(KEYWORDS.has(normalized) ? 'keyword' : 'ident', normalized, word)
       continue
     }
 

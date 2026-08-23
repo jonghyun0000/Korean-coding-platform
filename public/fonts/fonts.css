@@ -1,0 +1,35 @@
+/* 글꼴을 직접 담아 둡니다 (Google Fonts, OFL 라이선스).
+   학교망에서 외부 주소가 막혀 있거나 인터넷이 없어도 글꼴이 제대로 나오게 하기 위함입니다.
+   한글 전체(11,172자) + 영문 + 기호만 남기고 줄여 4개 파일 약 1.1MB 입니다. */
+
+@font-face {
+  font-family: 'Jua';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./Jua-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Gowun Dodum';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./GowunDodum-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Nanum Gothic Coding';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./NanumGothicCoding-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Nanum Gothic Coding';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('./NanumGothicCoding-Bold.woff2') format('woff2');
+}

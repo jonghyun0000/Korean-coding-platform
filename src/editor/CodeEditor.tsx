@@ -1,10 +1,16 @@
 import { useEffect, useImperativeHandle, useRef, forwardRef } from 'react'
-import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, Decoration, type DecorationSet } from '@codemirror/view'
-import { EditorState, StateEffect, StateField } from '@codemirror/state'
+import {
+  EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter,
+  Decoration, type DecorationSet, type Command,
+} from '@codemirror/view'
+import { EditorState, StateEffect, StateField, Annotation } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { bracketMatching, indentOnInput } from '@codemirror/language'
-import { closeBrackets, autocompletion, completionKeymap, closeBracketsKeymap } from '@codemirror/autocomplete'
-import { linter, setDiagnostics, lintKeymap } from '@codemirror/lint'
+import {
+  closeBrackets, autocompletion, closeBracketsKeymap,
+  acceptCompletion, closeCompletion, moveCompletionSelection, startCompletion, selectedCompletion,
+} from '@codemirror/autocomplete'
+import { setDiagnostics, lintKeymap, lintGutter } from '@codemirror/lint'
 import { hangulLanguage } from './hangulLanguage'
 
 export interface CodeEditorHandle {
@@ -22,6 +28,9 @@ interface Props {
   onChange: (code: string) => void
   onRun: () => void
 }
+
+/** 프로그램이 코드를 통째로 바꾼 변경 — 사용자 입력과 구분해 자동 저장을 건너뛴다 */
+const programmaticChange = Annotation.define<boolean>()
 
 // ---- 실행 중 줄 하이라이트 ----
 
@@ -47,6 +56,23 @@ const runningLineField = StateField.define<DecorationSet>({
   provide: (f) => EditorView.decorations.from(f),
 })
 
+/**
+ * Enter로 자동완성을 받아들이되, 이미 똑같이 다 친 '그냥 단어'라면
+ * Enter를 줄바꿈으로 넘겨 준다 (아이가 Enter를 눌렀는데 아무 일도 안 나는 상황 방지).
+ */
+const acceptCompletionOnEnter: Command = (view) => {
+  const selected = selectedCompletion(view.state)
+  if (!selected) return false
+  if (!selected.apply) {
+    const pos = view.state.selection.main.head
+    const line = view.state.doc.lineAt(pos)
+    const before = line.text.slice(0, pos - line.from)
+    const m = /[A-Za-z0-9가-힣ㄱ-ㅎㅏ-ㅣ_]+$/.exec(before)
+    if (m && m[0] === selected.label) return false
+  }
+  return acceptCompletion(view)
+}
+
 const editorTheme = EditorView.theme({
   '&': {
     fontSize: '16.5px',
@@ -62,12 +88,12 @@ const editorTheme = EditorView.theme({
   '.cm-line': { padding: '0 12px' },
   '.cm-gutters': {
     backgroundColor: '#f8fafc',
-    color: '#94a3b8',
+    color: '#64748b',
     border: 'none',
     borderRight: '2px solid #e2e8f0',
     fontSize: '14px',
   },
-  '.cm-activeLineGutter': { backgroundColor: '#e0e7ff' },
+  '.cm-activeLineGutter': { backgroundColor: '#e0e7ff', color: '#3730a3' },
   '.cm-activeLine': { backgroundColor: 'rgba(224, 231, 255, 0.35)' },
   '&.cm-focused': { outline: 'none' },
   '.cm-running-line': {
@@ -75,7 +101,7 @@ const editorTheme = EditorView.theme({
   },
   '.cm-lintRange-error': {
     backgroundImage: 'none',
-    textDecoration: 'underline wavy #ef4444 2px',
+    textDecoration: 'underline wavy #dc2626 2px',
     textUnderlineOffset: '4px',
   },
   '.cm-tooltip': {
@@ -110,7 +136,7 @@ const editorTheme = EditorView.theme({
     color: '#1e293b',
   },
   '.cm-completionDetail': {
-    color: '#94a3b8',
+    color: '#64748b',
     fontStyle: 'normal',
     marginLeft: '10px',
     fontSize: '12px',
@@ -135,6 +161,8 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
 ) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
+  /** 지금 빨간 밑줄이 떠 있는지 — 사용자가 고치기 시작하면 지운다 */
+  const hasErrorMarkRef = useRef(false)
   const onChangeRef = useRef(onChange)
   const onRunRef = useRef(onRun)
   onChangeRef.current = onChange
@@ -147,6 +175,7 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
       doc: initialCode,
       extensions: [
         lineNumbers(),
+        lintGutter(),
         history(),
         highlightActiveLine(),
         highlightActiveLineGutter(),
@@ -154,18 +183,18 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
         closeBrackets(),
         indentOnInput(),
         autocompletion({
-          defaultKeymap: true,
+          // 자동완성 단축키는 아래에서 직접 정의한다 (Enter 함정 방지)
+          defaultKeymap: false,
           activateOnTyping: true,
           selectOnOpen: true,
           icons: true,
           maxRenderedOptions: 24,
         }),
         runningLineField,
-        linter(() => []),
         hangulLanguage(),
         editorTheme,
         keymap.of([
-          // Ctrl/Cmd+Enter로 실행
+          // 실행 (Ctrl/Cmd+Enter)
           {
             key: 'Mod-Enter',
             run: () => {
@@ -173,15 +202,34 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
               return true
             },
           },
+          // 자동완성 조작
+          { key: 'Ctrl-Space', run: startCompletion },
+          { key: 'Escape', run: closeCompletion },
+          { key: 'ArrowDown', run: moveCompletionSelection(true) },
+          { key: 'ArrowUp', run: moveCompletionSelection(false) },
+          { key: 'PageDown', run: moveCompletionSelection(true, 'page') },
+          { key: 'PageUp', run: moveCompletionSelection(false, 'page') },
+          { key: 'Tab', run: acceptCompletion },
+          { key: 'Enter', run: acceptCompletionOnEnter },
           ...closeBracketsKeymap,
           ...defaultKeymap,
           ...historyKeymap,
-          ...completionKeymap,
           ...lintKeymap,
           indentWithTab,
         ]),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) onChangeRef.current(update.state.doc.toString())
+          if (!update.docChanged) return
+          const fromProgram = update.transactions.some((tr) => tr.annotation(programmaticChange))
+          if (fromProgram) return
+          // 사용자가 고치기 시작하면 빨간 밑줄을 지운다
+          if (hasErrorMarkRef.current) {
+            hasErrorMarkRef.current = false
+            queueMicrotask(() => {
+              const view = viewRef.current
+              if (view) view.dispatch(setDiagnostics(view.state, []))
+            })
+          }
+          onChangeRef.current(update.state.doc.toString())
         }),
       ],
     })
@@ -207,26 +255,31 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
       if (!view) return
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: code },
+        selection: { anchor: Math.min(code.length, code.length) },
         effects: setRunningLineEffect.of(null),
+        annotations: programmaticChange.of(true),
       })
-      view.dispatch(setDiagnostics(view.state, []))
+      hasErrorMarkRef.current = false
+      view.dispatch({ ...setDiagnostics(view.state, []), annotations: programmaticChange.of(true) })
     },
     setError: (line, message = '여기를 확인해 보세요') => {
       const view = viewRef.current
       if (!view) return
       if (line === null || line < 1 || line > view.state.doc.lines) {
-        view.dispatch(setDiagnostics(view.state, []))
+        hasErrorMarkRef.current = false
+        view.dispatch({ ...setDiagnostics(view.state, []), annotations: programmaticChange.of(true) })
         return
       }
       const docLine = view.state.doc.line(line)
-      view.dispatch(setDiagnostics(view.state, [
-        {
-          from: docLine.from,
-          to: docLine.to,
-          severity: 'error',
-          message,
-        },
-      ]))
+      hasErrorMarkRef.current = true
+      view.dispatch({
+        ...setDiagnostics(view.state, [
+          { from: docLine.from, to: docLine.to, severity: 'error', message },
+        ]),
+        annotations: programmaticChange.of(true),
+      })
+      // 에러 줄이 화면 밖이면 보이게 스크롤
+      view.dispatch({ effects: EditorView.scrollIntoView(docLine.from, { y: 'center' }) })
     },
     setRunningLine: (line) => {
       const view = viewRef.current
