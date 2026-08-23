@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { TopBar } from './components/TopBar'
-import { LessonPanel } from './components/LessonPanel'
+import { NextStepBar, type RunState } from './components/NextStepBar'
+import { LessonPanel, type Tab } from './components/LessonPanel'
 import { CanvasPane } from './components/CanvasPane'
 import { ConsolePane, type ConsoleItem } from './components/ConsolePane'
 import { Confetti } from './components/Confetti'
@@ -13,6 +14,7 @@ import { TurtlePlayer } from './turtle/player'
 import { runProgram } from './lang/run'
 import type { AskRequest, Effect } from './lang/interpreter'
 import { getMission, MISSIONS } from './missions/missions'
+import { Emo } from './ui/emoji'
 import * as storage from './storage'
 
 // 공용 PC용: 주소 끝에 ?reset=1 을 붙여 열면 저장된 내용을 모두 지우고 새로 시작한다.
@@ -43,13 +45,19 @@ export default function App() {
   const [progress, setProgress] = useState<storage.ProgressMap>(() => storage.loadProgress())
   const [items, setItems] = useState<ConsoleItem[]>([])
   const [running, setRunning] = useState(false)
+  const [runState, setRunState] = useState<RunState>('idle')
+  const [justBadge, setJustBadge] = useState<string | null>(null)
   const [speed, setSpeed] = useState(1)
-  const [celebration, setCelebration] = useState<string | null>(null)
+  const [confettiKey, setConfettiKey] = useState<number | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
   const [progressOpen, setProgressOpen] = useState(false)
   const [teacherOpen, setTeacherOpen] = useState(false)
   const [announcement, setAnnouncement] = useState('')
   const [asking, setAsking] = useState<{ ask: AskRequest; outputs: string[] } | null>(null)
+  // 교재 패널 상태 (다음 할 일 띠에서 원하는 탭을 열 수 있도록 여기서 관리)
+  const [lessonTab, setLessonTab] = useState<Tab>('learn')
+  const [lessonOpen, setLessonOpen] = useState(() =>
+    storage.loadLessonOpen(typeof window === 'undefined' || window.innerWidth >= 1024))
 
   const editorRef = useRef<CodeEditorHandle>(null)
   const canvasWrapRef = useRef<HTMLDivElement>(null)
@@ -60,7 +68,7 @@ export default function App() {
 
   const nextItemId = useRef(1)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const celebrationTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const confettiTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** 저장·판정에 쓰는 '지금 미션' — 미션을 바꾸는 순간 바로 갱신해서 코드가 섞이지 않게 한다 */
   const missionIdRef = useRef(missionId)
   /** 질문 창의 답을 기다리는 곳 */
@@ -68,6 +76,8 @@ export default function App() {
   const busyRef = useRef(false)
 
   const mission = getMission(missionId)
+  const missionIndex = MISSIONS.findIndex((m) => m.id === missionId)
+  const nextMission = missionIndex >= 0 && missionIndex < MISSIONS.length - 1 ? MISSIONS[missionIndex + 1] : null
 
   useEffect(() => {
     player.setSpeed(speed)
@@ -78,6 +88,16 @@ export default function App() {
   }, [])
 
   const initialCode = useRef(storage.loadCode(missionId) ?? mission.starterCode).current
+
+  const setLessonOpenPersist = useCallback((open: boolean) => {
+    setLessonOpen(open)
+    storage.saveLessonOpen(open)
+  }, [])
+
+  const openTab = useCallback((tab: Tab) => {
+    setLessonTab(tab)
+    setLessonOpenPersist(true)
+  }, [setLessonOpenPersist])
 
   // ---- 물어보기(입력) ----
 
@@ -107,6 +127,7 @@ export default function App() {
       player.stop()
       player.reset()
       setItems([])
+      setJustBadge(null)
       editor.setError(null)
       editor.setRunningLine(null)
 
@@ -120,6 +141,7 @@ export default function App() {
       while (result.ok === 'ask') {
         if (questions++ >= MAX_QUESTIONS) {
           pushItem('error', `질문이 너무 많아요(${MAX_QUESTIONS}번). 반복 안에서 계속 물어보고 있지 않은지 확인해 보세요.`)
+          setRunState('error')
           return
         }
         randoms = result.randoms
@@ -127,6 +149,7 @@ export default function App() {
         const answer = await askUser(result.ask, result.effects)
         if (answer === null) {
           pushItem('info', '질문에 답하지 않고 그만두었어요.')
+          setRunState('idle')
           return
         }
         answers.push(answer)
@@ -137,6 +160,7 @@ export default function App() {
         const lineText = result.line != null ? `${result.line}번째 줄: ` : ''
         pushItem('error', `${lineText}${result.message}`)
         editor.setError(result.line, result.message)
+        setRunState('error')
         if (isNarrowScreen()) consoleWrapRef.current?.scrollIntoView({ block: 'nearest' })
         return
       }
@@ -148,11 +172,13 @@ export default function App() {
 
       if (effects.length === 0) {
         pushItem('info', '실행 완료! 이번엔 화면에 보여줄 게 없었어요. 상자에 값만 넣었거나 함수를 만들기만 했다면 정상이에요.')
+        setRunState('incomplete')
         if (isNarrowScreen()) consoleWrapRef.current?.scrollIntoView({ block: 'nearest' })
         return
       }
 
       setRunning(true)
+      setRunState('running')
       if (isNarrowScreen()) canvasWrapRef.current?.scrollIntoView({ block: 'nearest' })
       player.play(effects, {
         onPrint: (text) => pushItem('print', text),
@@ -162,20 +188,24 @@ export default function App() {
           const m = getMission(runningMissionId)
           const passed = m.check({ code, effects, starterCode: m.starterCode })
           if (passed) {
+            setRunState('done')
+            setJustBadge(m.badge)
             setCompleted((prev) => {
               if (prev.has(m.id)) return prev
               const next = new Set(prev)
               next.add(m.id)
               storage.saveBadges(next)
               setProgress(storage.updateProgress(m.id, { completedAt: new Date().toISOString() }))
-              setCelebration(m.badge)
-              if (celebrationTimer.current) clearTimeout(celebrationTimer.current)
-              celebrationTimer.current = setTimeout(() => setCelebration(null), 3200)
+              // 색종이는 처음 완료했을 때만 (결과를 가리지 않도록 글자는 없음)
+              setConfettiKey(Date.now())
+              if (confettiTimer.current) clearTimeout(confettiTimer.current)
+              confettiTimer.current = setTimeout(() => setConfettiKey(null), 3200)
               return next
             })
             pushItem('success', `참 잘했어요! 미션 ${m.order} 완료!`)
-            setAnnouncement(`미션 ${m.order} 완료. ${m.badge}를 받았어요.`)
+            setAnnouncement(`미션 ${m.order} 완료. ${m.badge}를 받았어요. 화면 위에서 다음 미션으로 갈 수 있어요.`)
           } else {
+            setRunState('incomplete')
             pushItem('info', `잘 실행됐어요! 미션을 끝내려면 이걸 해 보세요 → ${m.goal}`)
           }
         },
@@ -188,6 +218,7 @@ export default function App() {
   const handleStop = useCallback(() => {
     player.stop()
     setRunning(false)
+    setRunState('idle')
     editorRef.current?.setRunningLine(null)
     pushItem('info', '멈췄어요')
   }, [player, pushItem])
@@ -200,6 +231,8 @@ export default function App() {
     player.stop()
     player.reset()
     setRunning(false)
+    setRunState('idle')
+    setJustBadge(null)
     setItems([])
     editorRef.current?.setError(null)
     editorRef.current?.setRunningLine(null)
@@ -241,7 +274,10 @@ export default function App() {
     player.stop()
     player.reset()
     setRunning(false)
+    setRunState('idle')
+    setJustBadge(null)
     setItems([])
+    setLessonTab('learn')
   }, [player])
 
   const loadCode = useCallback((code: string) => {
@@ -273,6 +309,9 @@ export default function App() {
     setItems([])
     setHelpOpen(false)
     setProgressOpen(false)
+    setRunState('idle')
+    setJustBadge(null)
+    setLessonTab('learn')
     player.stop()
     player.reset()
     setRunning(false)
@@ -288,6 +327,8 @@ export default function App() {
     const id = last && MISSIONS.some((m) => m.id === last) ? last : missionIdRef.current
     missionIdRef.current = id
     setMissionId(id)
+    setRunState('idle')
+    setJustBadge(null)
     editorRef.current?.setCode(storage.loadCode(id) ?? getMission(id).starterCode)
   }, [])
 
@@ -308,25 +349,58 @@ export default function App() {
         onTeacher={() => setTeacherOpen(true)}
       />
 
+      {/* 지금 무엇을 해야 하는지 항상 알려 주는 띠 */}
+      <NextStepBar
+        mission={mission}
+        state={runState}
+        badge={justBadge}
+        nextMission={nextMission}
+        onGoNext={() => nextMission && handleSelectMission(nextMission.id)}
+        onOpenSteps={() => openTab('steps')}
+        onOpenChallenge={() => openTab('challenge')}
+        onRun={handleRun}
+        onOpenProgress={() => setProgressOpen(true)}
+      />
+
       <main className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2 sm:p-3 lg:flex-row lg:overflow-hidden">
         {/* 좌측: 미션 교재 + 코드 에디터 (~45%) */}
         <section className="flex flex-col gap-2 lg:min-h-0 lg:w-[45%]">
-          <div className="lg:flex lg:min-h-0 lg:max-h-[55%] lg:flex-col">
+          <div className="lg:flex lg:min-h-0 lg:max-h-[52%] lg:flex-col">
             <LessonPanel
-              key={mission.id}
               mission={mission}
               completed={completed.has(mission.id)}
               onLoadCode={loadCode}
               onQuizAnswer={handleQuizAnswer}
+              tab={lessonTab}
+              onTabChange={setLessonTab}
+              open={lessonOpen}
+              onOpenChange={setLessonOpenPersist}
             />
           </div>
-          <div className="h-[320px] overflow-hidden rounded-2xl border-2 border-slate-200 bg-white shadow-sm lg:h-auto lg:min-h-[240px] lg:flex-1">
-            <CodeEditor
-              ref={editorRef}
-              initialCode={initialCode}
-              onChange={handleCodeChange}
-              onRun={handleRun}
-            />
+
+          {/* 코드 쓰는 곳 — 무엇을 하는 칸인지 이름을 붙여 준다 */}
+          <div className="flex h-[340px] flex-col overflow-hidden rounded-2xl border-2 border-slate-200 bg-white shadow-sm lg:h-auto lg:min-h-[240px] lg:flex-1">
+            <div className="flex shrink-0 items-center gap-2 border-b-2 border-slate-100 bg-slate-50 px-3 py-1.5">
+              <Emo name="memo" size={16} />
+              <span className="font-jua text-sm text-slate-700">여기에 코드를 써요</span>
+              {!running && (
+                <button
+                  type="button"
+                  onClick={handleRun}
+                  className="font-jua ml-auto flex min-h-[36px] items-center gap-1 rounded-lg bg-emerald-500 px-3 py-1.5 text-[13.5px] text-white shadow-sm transition hover:bg-emerald-600 active:scale-95"
+                >
+                  <Emo name="play" size={15} /> 실행하기
+                </button>
+              )}
+            </div>
+            <div className="min-h-0 flex-1">
+              <CodeEditor
+                ref={editorRef}
+                initialCode={initialCode}
+                onChange={handleCodeChange}
+                onRun={handleRun}
+              />
+            </div>
           </div>
         </section>
 
@@ -357,7 +431,7 @@ export default function App() {
           onCancel={() => finishAsk(null)}
         />
       )}
-      {celebration && <Confetti key={celebration} badge={celebration} />}
+      {confettiKey !== null && <Confetti key={confettiKey} />}
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} onResetAll={handleResetAll} />}
       {progressOpen && (
         <ProgressModal

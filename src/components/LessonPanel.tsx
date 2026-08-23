@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import type { Mission } from '../missions/missions'
 import { Emo, type EmojiName } from '../ui/emoji'
-import * as storage from '../storage'
+
+export type Tab = 'learn' | 'steps' | 'quiz' | 'challenge'
 
 interface Props {
   mission: Mission
@@ -9,30 +10,26 @@ interface Props {
   onLoadCode: (code: string) => void
   /** 퀴즈에서 고른 번호와 정답 여부 (진도에 기록) */
   onQuizAnswer: (picked: number, correct: boolean) => void
+  tab: Tab
+  onTabChange: (tab: Tab) => void
+  open: boolean
+  onOpenChange: (open: boolean) => void
 }
 
-type Tab = 'learn' | 'steps' | 'quiz' | 'challenge'
-
+// 번호를 붙여 '이 순서대로 하면 된다'가 한눈에 보이게 한다
 const TABS: { id: Tab; label: string; emoji: EmojiName }[] = [
   { id: 'learn', label: '배우기', emoji: 'graduation_cap' },
   { id: 'steps', label: '따라하기', emoji: 'footprints' },
   { id: 'quiz', label: '퀴즈', emoji: 'brain' },
   { id: 'challenge', label: '도전', emoji: 'rocket' },
 ]
+const TAB_NO = ['①', '②', '③', '④']
 
 /** 교재식 미션 패널: 개념 배우기 → 따라하기 → 퀴즈 → 도전 */
-export function LessonPanel({ mission, completed, onLoadCode, onQuizAnswer }: Props) {
-  // 좁은 화면에서는 기본으로 접어 두어 코드와 그림판이 먼저 보이게 한다
-  const [open, setOpen] = useState(() =>
-    storage.loadLessonOpen(typeof window === 'undefined' || window.innerWidth >= 1024),
-  )
-  const [tab, setTab] = useState<Tab>('learn')
-
-  const toggle = () => {
-    const next = !open
-    setOpen(next)
-    storage.saveLessonOpen(next)
-  }
+export function LessonPanel({
+  mission, completed, onLoadCode, onQuizAnswer, tab, onTabChange, open, onOpenChange,
+}: Props) {
+  const toggle = () => onOpenChange(!open)
 
   return (
     <div className="flex min-h-0 flex-col rounded-2xl border-2 border-indigo-200 bg-indigo-50">
@@ -53,7 +50,7 @@ export function LessonPanel({ mission, completed, onLoadCode, onQuizAnswer }: Pr
           </span>
         )}
         <span className="font-jua shrink-0 rounded-lg bg-white/70 px-2 py-1 text-[13px] text-indigo-700">
-          {open ? '접기 ▲' : '펼치기 ▼'}
+          {open ? '교재 접기 ▲' : '교재 펼치기 ▼'}
         </span>
       </button>
 
@@ -68,19 +65,21 @@ export function LessonPanel({ mission, completed, onLoadCode, onQuizAnswer }: Pr
 
           {/* 탭 바 */}
           <div className="mb-2 flex shrink-0 gap-1">
-            {TABS.map((t) => (
+            {TABS.map((t, i) => (
               <button
                 key={t.id}
                 type="button"
-                onClick={() => setTab(t.id)}
+                onClick={() => onTabChange(t.id)}
                 aria-pressed={tab === t.id}
-                className={`font-jua flex items-center gap-1 rounded-t-xl px-3 py-2.5 text-[14px] transition ${
+                className={`font-jua flex flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-t-xl px-2 py-2.5 text-[14px] transition sm:flex-none sm:px-3 ${
                   tab === t.id
-                    ? 'bg-white text-indigo-800 shadow-sm'
+                    ? 'bg-white text-indigo-800 shadow-sm ring-2 ring-indigo-300'
                     : 'bg-indigo-100/60 text-indigo-700 hover:bg-indigo-100'
                 }`}
               >
-                <Emo name={t.emoji} size={15} /> {t.label}
+                <span className="text-indigo-500">{TAB_NO[i]}</span>
+                <Emo name={t.emoji} size={15} className="hidden sm:inline-block" />
+                {t.label}
               </button>
             ))}
           </div>
