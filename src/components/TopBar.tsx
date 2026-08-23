@@ -12,11 +12,14 @@ interface Props {
   onFinishNow: () => void
   onClear: () => void
   onHelp: () => void
+  onProgress: () => void
+  onTeacher: () => void
+  teacherMode: boolean
 }
 
 export function TopBar({
-  missionId, completed, running,
-  onSelectMission, onRun, onStop, onFinishNow, onClear, onHelp,
+  missionId, completed, running, teacherMode,
+  onSelectMission, onRun, onStop, onFinishNow, onClear, onHelp, onProgress, onTeacher,
 }: Props) {
   return (
     <header className="flex flex-wrap items-center gap-2 border-b-4 border-indigo-200 bg-gradient-to-r from-indigo-500 via-violet-500 to-fuchsia-500 px-3 py-2 sm:px-4">
@@ -26,9 +29,14 @@ export function TopBar({
       </div>
 
       <div className="ml-auto flex flex-wrap items-center gap-2">
-        <span className="font-jua hidden items-center gap-1.5 rounded-xl bg-white/20 px-3 py-1.5 text-[15px] text-white sm:flex">
+        <button
+          type="button"
+          onClick={onProgress}
+          title="어디까지 했는지 보고, 다른 컴퓨터로 옮길 수 있어요"
+          className="font-jua hidden min-h-[40px] items-center gap-1.5 rounded-xl bg-white/20 px-3 py-2 text-[15px] text-white transition hover:bg-white/30 active:scale-95 sm:flex"
+        >
           <Emo name="sports_medal" size={17} /> {completed.size}/{MISSIONS.length}
-        </span>
+        </button>
 
         <MissionSelect missionId={missionId} completed={completed} onSelect={onSelectMission} />
 
@@ -73,6 +81,17 @@ export function TopBar({
         >
           <Emo name="broom" size={17} /> 그림 지우기
         </button>
+
+        {teacherMode && (
+          <button
+            type="button"
+            onClick={onTeacher}
+            title="성취기준·지도 포인트·정답이 담긴 교사용 자료"
+            className="font-jua flex min-h-[40px] items-center gap-1.5 rounded-xl bg-amber-300 px-3 py-2 text-[14px] text-amber-950 shadow-md transition hover:bg-amber-200 active:scale-95"
+          >
+            <Emo name="graduation_cap" size={17} /> 교사용
+          </button>
+        )}
 
         <button
           type="button"

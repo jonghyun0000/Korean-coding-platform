@@ -6,6 +6,7 @@ interface Props {
   player: TurtlePlayer
   speed: number
   onSpeedChange: (speed: number) => void
+  onSaveImage: () => void
 }
 
 const SPEEDS: { label: string; emoji: EmojiName; value: number }[] = [
@@ -14,7 +15,7 @@ const SPEEDS: { label: string; emoji: EmojiName; value: number }[] = [
   { label: '빠르게', emoji: 'high_voltage', value: 2.5 },
 ]
 
-export function CanvasPane({ player, speed, onSpeedChange }: Props) {
+export function CanvasPane({ player, speed, onSpeedChange, onSaveImage }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
 
@@ -33,7 +34,15 @@ export function CanvasPane({ player, speed, onSpeedChange }: Props) {
       <div className="flex items-center gap-2 border-b-2 border-sky-100 bg-sky-50 px-3 py-1.5 sm:px-4">
         <Emo name="framed_picture" size={16} />
         <span className="font-jua text-sm text-sky-900">그림판</span>
-        <div className="ml-auto flex gap-1" role="group" aria-label="거북이 속도">
+        <button
+          type="button"
+          onClick={onSaveImage}
+          title="지금 그림을 파일로 저장해요"
+          className="font-jua ml-auto flex min-h-[40px] items-center gap-1 rounded-lg bg-white px-3 py-2 text-[13.5px] text-sky-800 ring-1 ring-sky-300 transition hover:bg-sky-100 active:scale-95"
+        >
+          <Emo name="framed_picture" size={14} /> 그림 저장
+        </button>
+        <div className="flex gap-1" role="group" aria-label="거북이 속도">
           {SPEEDS.map((s) => (
             <button
               key={s.value}

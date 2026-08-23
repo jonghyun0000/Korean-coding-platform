@@ -7,6 +7,8 @@ interface Props {
   mission: Mission
   completed: boolean
   onLoadCode: (code: string) => void
+  /** 퀴즈에서 고른 번호와 정답 여부 (진도에 기록) */
+  onQuizAnswer: (picked: number, correct: boolean) => void
 }
 
 type Tab = 'learn' | 'steps' | 'quiz' | 'challenge'
@@ -19,7 +21,7 @@ const TABS: { id: Tab; label: string; emoji: EmojiName }[] = [
 ]
 
 /** 교재식 미션 패널: 개념 배우기 → 따라하기 → 퀴즈 → 도전 */
-export function LessonPanel({ mission, completed, onLoadCode }: Props) {
+export function LessonPanel({ mission, completed, onLoadCode, onQuizAnswer }: Props) {
   // 좁은 화면에서는 기본으로 접어 두어 코드와 그림판이 먼저 보이게 한다
   const [open, setOpen] = useState(() =>
     storage.loadLessonOpen(typeof window === 'undefined' || window.innerWidth >= 1024),
@@ -87,7 +89,7 @@ export function LessonPanel({ mission, completed, onLoadCode }: Props) {
           <div className="max-h-[34vh] min-h-0 overflow-y-auto rounded-xl rounded-tl-none bg-white p-3 lg:max-h-none lg:flex-1">
             {tab === 'learn' && <LearnTab mission={mission} />}
             {tab === 'steps' && <StepsTab mission={mission} onLoadCode={onLoadCode} />}
-            {tab === 'quiz' && <QuizTab key={mission.id} mission={mission} />}
+            {tab === 'quiz' && <QuizTab key={mission.id} mission={mission} onQuizAnswer={onQuizAnswer} />}
             {tab === 'challenge' && <ChallengeTab mission={mission} onLoadCode={onLoadCode} />}
           </div>
         </div>
@@ -208,7 +210,7 @@ function StepsTab({ mission, onLoadCode }: { mission: Mission; onLoadCode: (code
 
 // ---- 퀴즈 ----
 
-function QuizTab({ mission }: { mission: Mission }) {
+function QuizTab({ mission, onQuizAnswer }: { mission: Mission; onQuizAnswer: (picked: number, correct: boolean) => void }) {
   const quiz = mission.lesson.quiz
   const [picked, setPicked] = useState<number | null>(null)
   const correct = picked !== null && picked === quiz.answer
@@ -232,7 +234,10 @@ function QuizTab({ mission }: { mission: Mission }) {
             <button
               key={i}
               type="button"
-              onClick={() => setPicked(i)}
+              onClick={() => {
+                setPicked(i)
+                onQuizAnswer(i, i === quiz.answer)
+              }}
               className={`font-code block w-full rounded-xl px-3 py-3 text-left text-[14.5px] transition active:scale-[0.99] ${style}`}
             >
               {['①', '②', '③', '④'][i]} {choice}

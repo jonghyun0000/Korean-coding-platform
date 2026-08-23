@@ -13,6 +13,8 @@ const SECTIONS: { title: string; rows: Row[] }[] = [
     title: '기본 명령',
     rows: [
       { code: '출력("안녕")', desc: '화면에 글자 보여주기', en: 'print' },
+      { code: '이름 = 입력("이름이 뭐예요?")', desc: '물어보고 답을 글자로 받기', en: 'input' },
+      { code: '나이 = 숫자입력("몇 살?")', desc: '물어보고 답을 숫자로 받기 (계산할 값)', en: 'inputNumber' },
       { code: '이름 = "민준"', desc: '변수(상자)에 값 넣기' },
       { code: '# 설명', desc: '주석 — 컴퓨터가 읽지 않는 메모' },
     ],
@@ -45,6 +47,20 @@ const SECTIONS: { title: string; rows: Row[] }[] = [
       { code: '캐릭터.색깔("빨강") / 캐릭터.굵기(5)', desc: '펜 색과 굵기 (red 처럼 영어도 돼요)', en: 'color / width' },
       { code: '캐릭터.펜올리기() / 캐릭터.펜내리기()', desc: '안 그리고 이동 / 다시 그리기', en: 'penup / pendown' },
       { code: '캐릭터.말하기("안녕!")', desc: '말풍선 보여주기', en: 'say' },
+    ],
+  },
+  {
+    title: '거북이 화가 명령 (그림 그리기)',
+    rows: [
+      { code: '캐릭터.원(50)', desc: '지금 자리를 가운데로 동그라미 그리기', en: 'circle' },
+      { code: '캐릭터.이동(100, 50)', desc: '그 좌표로 가기 (오른쪽 x+, 위쪽 y+)', en: 'goto' },
+      { code: '캐릭터.집으로()', desc: '가운데(0,0)로 돌아가 위를 보기', en: 'home' },
+      { code: '캐릭터.방향(90)', desc: '바라보는 방향 정하기 (0=위, 90=오른쪽)', en: 'setheading' },
+      { code: '캐릭터.점찍기(20)', desc: '지금 자리에 동그란 점 찍기', en: 'dot' },
+      { code: '캐릭터.채우기시작() … 채우기끝()', desc: '그 사이에 그린 도형 안쪽 색칠하기', en: 'begin_fill / end_fill' },
+      { code: '캐릭터.글쓰기("안녕")', desc: '그림판에 글자 쓰기 (그림으로 남아요)', en: 'write' },
+      { code: '캐릭터.숨기기() / 보이기()', desc: '거북이 감추기 / 다시 보이기', en: 'hideturtle / showturtle' },
+      { code: '캐릭터.지우기()', desc: '그린 그림 모두 지우기', en: 'clear' },
     ],
   },
 ]

@@ -80,3 +80,25 @@ body {
     opacity: 1;
   }
 }
+
+/* ---- 인쇄 (진도표 · 교사용 자료) ---- */
+
+@media print {
+  body {
+    background: #fff;
+  }
+  /* 인쇄할 때는 창 안의 내용만 보이게 */
+  body:has(.print-area) > #root > div > *:not([role="dialog"]) {
+    display: none !important;
+  }
+  .print-area {
+    max-height: none !important;
+    overflow: visible !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+  }
+  .print\:hidden {
+    display: none !important;
+  }
+}

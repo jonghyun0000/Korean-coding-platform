@@ -61,9 +61,42 @@ export type Effect =
   | { kind: 'pen'; down: boolean; line: number }
   | { kind: 'width'; width: number; line: number }
   | { kind: 'say'; text: string; line: number }
+  // 좌표는 아이들이 배우는 수학과 같게: 오른쪽이 x+, 위쪽이 y+
+  | { kind: 'goto'; x: number; y: number; line: number }
+  | { kind: 'heading'; angle: number; line: number }   // 0 = 위쪽, 커지면 시계방향
+  | { kind: 'circle'; radius: number; line: number }   // 지금 자리를 가운데로 하는 원
+  | { kind: 'dot'; size: number; line: number }
+  | { kind: 'fill'; start: boolean; line: number }
+  | { kind: 'visible'; shown: boolean; line: number }
+  | { kind: 'clear'; line: number }
+  | { kind: 'write'; text: string; line: number }
+
+/** 실행을 멈추고 아이에게 물어봐야 할 때 */
+export interface AskRequest {
+  question: string
+  kind: 'text' | 'number'
+  /** 앞서 준 답이 숫자가 아니어서 다시 묻는 경우 */
+  retry?: string
+}
+
+export interface RunOptions {
+  /** 이미 받아 둔 답 (앞에서부터 차례로 쓰인다) */
+  answers?: string[]
+  /** 무작위 값 기록 — 다시 실행해도 같은 그림이 나오도록 */
+  randoms?: number[]
+}
 
 export interface RunResult {
   effects: Effect[]
+  /** 이번 실행에서 쓴 무작위 값들 */
+  randoms: number[]
+  /** 있으면 아직 끝나지 않았고, 이 질문의 답이 필요하다는 뜻 */
+  ask?: AskRequest
+}
+
+/** 답을 아직 모를 때 실행을 잠시 멈추는 신호 (에러가 아님) */
+class NeedInputSignal {
+  constructor(public request: AskRequest) {}
 }
 
 // ---- 환경 (스코프) ----
@@ -136,8 +169,6 @@ class ReturnSignal {
 
 /** 아직 없는 기능을 부를 때, 지금 할 수 있는 방법을 알려 준다 */
 const UNSUPPORTED_HINTS: Record<string, string> = {
-  '입력': "'입력'은 아직 없는 기능이에요. 대신 값을 변수에 직접 넣어 보세요. 예: 추측 = 7",
-  'input': "'input'은 아직 없는 기능이에요. 대신 값을 변수에 직접 넣어 보세요. 예: 추측 = 7",
   '멈춤': "'멈춤'은 아직 없어요. 반복을 멈추려면 '동안'의 조건이 거짓이 되게 만들어 주세요.",
   'break': "'break'은 아직 없어요. 반복을 멈추려면 '동안'의 조건이 거짓이 되게 만들어 주세요.",
   '계속': "'계속'은 아직 없어요. '만약'으로 할 일을 골라서 해 보세요.",
@@ -154,8 +185,8 @@ const UNSUPPORTED_HINTS: Record<string, string> = {
 
 // ---- 인터프리터 ----
 
-export function run(program: Stmt[]): RunResult {
-  const interp = new Interpreter()
+export function run(program: Stmt[], options: RunOptions = {}): RunResult {
+  const interp = new Interpreter(options)
   return interp.run(program)
 }
 
@@ -169,6 +200,16 @@ class Interpreter {
   private globals = new Env()
   /** 지금 어떤 반복 안에 있는지 — 오래 걸릴 때 정확한 줄과 문구를 고르기 위해 */
   private loopStack: { kind: 'rangeFor' | 'while'; line: number }[] = []
+  /** 물어보기(입력) 재생용 */
+  private answers: string[]
+  private answerIndex = 0
+  private randoms: number[]
+  private randomIndex = 0
+
+  constructor(options: RunOptions = {}) {
+    this.answers = options.answers ? [...options.answers] : []
+    this.randoms = options.randoms ? [...options.randoms] : []
+  }
 
   run(program: Stmt[]): RunResult {
     this.startTime = nowMs()
@@ -185,8 +226,63 @@ class Interpreter {
         })
       }
     }
-    this.execBlock(program, this.globals)
-    return { effects: this.effects }
+    try {
+      this.execBlock(program, this.globals)
+    } catch (e) {
+      if (e instanceof NeedInputSignal) {
+        return { effects: this.effects, randoms: this.randoms, ask: e.request }
+      }
+      throw e
+    }
+    return { effects: this.effects, randoms: this.randoms }
+  }
+
+  /** 무작위 값 — 다시 실행할 때는 처음에 뽑은 값을 그대로 쓴다 */
+  nextRandom(lo: number, hi: number): number {
+    if (this.randomIndex < this.randoms.length) {
+      const saved = this.randoms[this.randomIndex++]
+      return Math.max(lo, Math.min(hi, saved))
+    }
+    const v = lo + Math.floor(Math.random() * (hi - lo + 1))
+    this.randoms.push(v)
+    this.randomIndex++
+    return v
+  }
+
+  /**
+   * 아이에게 질문한다. 답을 이미 받아 뒀으면 그 값을 돌려주고,
+   * 아직 모르면 실행을 멈추는 신호를 던진다 (앱이 물어본 뒤 처음부터 다시 실행한다).
+   */
+  askInput(args: Value[], line: number, kind: 'text' | 'number'): Value {
+    if (args.length > 1) {
+      throw new KidError(
+        `${kind === 'number' ? '숫자입력' : '입력'}( )에는 물어볼 말 하나만 넣어요. 예: ${kind === 'number' ? '숫자입력("몇 살이에요?")' : '입력("이름이 뭐예요?")'}`,
+        line,
+      )
+    }
+    const question = args.length === 0
+      ? (kind === 'number' ? '숫자를 알려 주세요' : '무엇을 입력할까요?')
+      : toDisplay(args[0])
+
+    if (this.answerIndex < this.answers.length) {
+      const raw = this.answers[this.answerIndex++]
+      if (kind === 'number') {
+        const n = Number(raw.trim())
+        if (raw.trim() === '' || !Number.isFinite(n)) {
+          // 숫자가 아니면 그 답은 버리고 다시 물어본다
+          throw new NeedInputSignal({
+            question,
+            kind,
+            retry: `"${raw}"은(는) 숫자가 아니에요. 3, 10, 25 처럼 숫자로 알려 주세요.`,
+          })
+        }
+        this.pushPrint(`${question} ▸ ${toDisplay(n)}`, line)
+        return n
+      }
+      this.pushPrint(`${question} ▸ ${raw}`, line)
+      return raw
+    }
+    throw new NeedInputSignal({ question, kind })
   }
 
   private tooLongError(line: number): KidError {
@@ -581,9 +677,69 @@ class Interpreter {
         this.pushDraw({ kind: 'say', text: toDisplay(args[0]).slice(0, 200), line })
         return null
       }
+      case '집으로':
+        needNoArgs('집으로')
+        this.pushDraw({ kind: 'goto', x: 0, y: 0, line })
+        this.pushDraw({ kind: 'heading', angle: 0, line })
+        return null
+      case '이동': {
+        if (args.length !== 2 || typeof args[0] !== 'number' || typeof args[1] !== 'number') {
+          throw new KidError('캐릭터.이동( )에는 숫자 2개(x, y)가 필요해요. 예: 캐릭터.이동(100, 50)', line)
+        }
+        this.pushDraw({ kind: 'goto', x: args[0], y: args[1], line })
+        return null
+      }
+      case '방향': {
+        this.pushDraw({ kind: 'heading', angle: needOneNumber('방향', '90'), line })
+        return null
+      }
+      case '원': {
+        const r = needOneNumber('원', '50')
+        if (r <= 0) {
+          throw new KidError('원의 반지름은 0보다 큰 숫자여야 해요. 예: 캐릭터.원(50)', line)
+        }
+        this.pushDraw({ kind: 'circle', radius: Math.min(5000, r), line })
+        return null
+      }
+      case '점찍기': {
+        if (args.length === 0) {
+          this.pushDraw({ kind: 'dot', size: 0, line })
+          return null
+        }
+        const size = needOneNumber('점찍기', '20')
+        this.pushDraw({ kind: 'dot', size: Math.max(1, Math.min(400, size)), line })
+        return null
+      }
+      case '채우기시작':
+        needNoArgs('채우기시작')
+        this.pushDraw({ kind: 'fill', start: true, line })
+        return null
+      case '채우기끝':
+        needNoArgs('채우기끝')
+        this.pushDraw({ kind: 'fill', start: false, line })
+        return null
+      case '숨기기':
+        needNoArgs('숨기기')
+        this.pushDraw({ kind: 'visible', shown: false, line })
+        return null
+      case '보이기':
+        needNoArgs('보이기')
+        this.pushDraw({ kind: 'visible', shown: true, line })
+        return null
+      case '지우기':
+        needNoArgs('지우기')
+        this.pushDraw({ kind: 'clear', line })
+        return null
+      case '글쓰기': {
+        if (args.length !== 1) {
+          throw new KidError('캐릭터.글쓰기( )에는 쓸 말 1개가 필요해요. 예: 캐릭터.글쓰기("안녕")', line)
+        }
+        this.pushDraw({ kind: 'write', text: toDisplay(args[0]).slice(0, 100), line })
+        return null
+      }
       default:
         throw new KidError(
-          `캐릭터는 '${expr.name}'(이)라는 명령을 몰라요. 캐릭터가 아는 명령: 앞으로, 뒤로, 오른쪽, 왼쪽, 색깔, 펜올리기, 펜내리기, 굵기, 말하기`,
+          `캐릭터는 '${expr.name}'(이)라는 명령을 몰라요.\n캐릭터가 아는 명령: 앞으로, 뒤로, 오른쪽, 왼쪽, 방향, 이동, 집으로, 원, 점찍기, 색깔, 굵기, 펜올리기, 펜내리기, 채우기시작, 채우기끝, 글쓰기, 말하기, 숨기기, 보이기, 지우기`,
           line,
         )
     }
@@ -655,8 +811,10 @@ const BUILTINS: Record<string, Builtin> = {
     }
     const lo = Math.ceil(Math.min(args[0], args[1]))
     const hi = Math.floor(Math.max(args[0], args[1]))
-    return lo + Math.floor(Math.random() * (hi - lo + 1))
+    return _interp.nextRandom(lo, hi)
   },
+  '입력': (interp, args, line) => interp.askInput(args, line, 'text'),
+  '숫자입력': (interp, args, line) => interp.askInput(args, line, 'number'),
   '반올림': (_interp, args, line) => {
     if (args.length !== 1 || typeof args[0] !== 'number') {
       throw new KidError('반올림( )에는 숫자 1개가 필요해요. 예: 반올림(3.7)', line)

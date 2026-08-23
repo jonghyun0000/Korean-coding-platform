@@ -8,14 +8,15 @@ export interface PlayCallbacks {
   onDone: () => void
 }
 
-interface Segment {
-  x1: number
-  y1: number
-  x2: number
-  y2: number
-  color: string
-  width: number
-}
+interface Point { x: number; y: number }
+
+/** 화면에 남는 그림 조각들 (그린 순서대로 쌓인다) */
+type Shape =
+  | { type: 'line'; x1: number; y1: number; x2: number; y2: number; color: string; width: number }
+  | { type: 'fill'; points: Point[]; color: string }
+  | { type: 'dot'; x: number; y: number; size: number; color: string }
+  | { type: 'circle'; x: number; y: number; radius: number; color: string; width: number; filled: boolean }
+  | { type: 'text'; x: number; y: number; text: string; color: string }
 
 const DEFAULT_COLOR = '#334155'
 const DEFAULT_WIDTH = 3
@@ -24,9 +25,16 @@ const MAX_DONE_PER_FRAME = 200 // 한 프레임에 완료할 이동/회전 최�
 const CATCH_UP_MS = 250        // 프레임이 오래 멈췄을 때 따라잡기 한계
 const TOTAL_BUDGET_MS = 12_000 // 전체 재생이 이보다 길면 비율을 줄여 빠르게
 
+/** 시간이 걸리며 움직이는 효과인지 */
+function isTimed(effect: Effect): boolean {
+  return effect.kind === 'move' || effect.kind === 'turn' || effect.kind === 'goto'
+    || effect.kind === 'heading' || effect.kind === 'circle' || effect.kind === 'say'
+}
+
 /**
  * 효과 목록을 캔버스 위에서 애니메이션으로 재생하는 거북이 그래픽 플레이어.
- * 좌표계: 캔버스 중앙이 (0,0), 시작 방향은 위쪽, 오른쪽(+각도)은 시계방향.
+ * 좌표계: 캔버스 중앙이 (0,0). 화면 안에서는 y가 아래로 커지지만,
+ * 아이에게 보여 주는 이동(x, y)은 수학처럼 위쪽이 y+ 이다.
  */
 export class TurtlePlayer {
   private canvas: HTMLCanvasElement | null = null
@@ -39,7 +47,9 @@ export class TurtlePlayer {
   private penDown = true
   private color = DEFAULT_COLOR
   private width = DEFAULT_WIDTH
-  private segments: Segment[] = []
+  private shown = true
+  private shapes: Shape[] = []
+  private fillPoints: Point[] | null = null
   private bubble: string | null = null
   /** 중앙에서 가장 멀리 나간 거리 — 그림이 화면 밖으로 나가면 자동으로 줄여 보여 준다 */
   private extent = 0
@@ -51,8 +61,11 @@ export class TurtlePlayer {
   private timer: ReturnType<typeof setTimeout> | null = null
   private effectStart = 0 // 현재 효과 시작 시각
   private initedIndex = -1 // 시작 처리를 마친 효과 번호
-  private moveFrom = { x: 0, y: 0 }
+  private moveFrom: Point = { x: 0, y: 0 }
+  private moveTo: Point = { x: 0, y: 0 }
   private turnFrom = 0
+  private turnTo = 0
+  private circleProgress = 0
   private timeScale = 1 // 전체가 너무 길면 1보다 커진다
   private callbacks: PlayCallbacks | null = null
   playing = false
@@ -116,12 +129,15 @@ export class TurtlePlayer {
     this.penDown = true
     this.color = DEFAULT_COLOR
     this.width = DEFAULT_WIDTH
-    this.segments = []
+    this.shown = true
+    this.shapes = []
+    this.fillPoints = null
     this.bubble = null
     this.extent = 0
     this.index = 0
     this.initedIndex = -1
     this.effectStart = 0
+    this.circleProgress = 0
     this.timeScale = 1
   }
 
@@ -144,12 +160,7 @@ export class TurtlePlayer {
     const cb = this.callbacks!
     while (this.index < this.effects.length) {
       const effect = this.effects[this.index]
-      if (effect.kind === 'move' || effect.kind === 'turn') {
-        if (this.initedIndex !== this.index) {
-          if (effect.kind === 'move') this.moveFrom = { x: this.x, y: this.y }
-          if (effect.kind === 'turn') this.turnFrom = this.heading
-        }
-      }
+      if (this.initedIndex !== this.index) this.beginEffect(effect, null)
       this.applyInstant(effect, cb)
       this.index++
       this.initedIndex = -1
@@ -189,7 +200,10 @@ export class TurtlePlayer {
   private rawDuration(effect: Effect): number {
     switch (effect.kind) {
       case 'move': return Math.min(600, Math.max(120, Math.abs(effect.dist) * 2.4))
+      case 'goto': return 320
       case 'turn': return Math.min(320, Math.max(90, Math.abs(effect.angle) * 1.4))
+      case 'heading': return 200
+      case 'circle': return Math.min(900, Math.max(300, effect.radius * 4))
       case 'say': return 950
       default: return 0
     }
@@ -202,9 +216,50 @@ export class TurtlePlayer {
   }
 
   /** 중앙에서 얼마나 멀리 갔는지 기록 (자동 축소용) */
-  private noteExtent(x: number, y: number) {
-    const r = Math.max(Math.abs(x), Math.abs(y))
+  private noteExtent(x: number, y: number, pad = 0) {
+    const r = Math.max(Math.abs(x), Math.abs(y)) + pad
     if (r > this.extent) this.extent = r
+  }
+
+  private addFillPoint(x: number, y: number) {
+    if (this.fillPoints) this.fillPoints.push({ x, y })
+  }
+
+  /** 이 효과가 어디서 시작하는지 기록 (애니메이션 준비) */
+  private beginEffect(effect: Effect, cb: PlayCallbacks | null) {
+    if (cb) cb.onLine(effect.line)
+    switch (effect.kind) {
+      case 'move': {
+        const rad = (this.heading * Math.PI) / 180
+        this.moveFrom = { x: this.x, y: this.y }
+        this.moveTo = {
+          x: this.x + Math.sin(rad) * effect.dist,
+          y: this.y - Math.cos(rad) * effect.dist,
+        }
+        return
+      }
+      case 'goto':
+        this.moveFrom = { x: this.x, y: this.y }
+        // 아이에게 보여 주는 y는 위쪽이 +, 화면 안쪽 y는 아래쪽이 +
+        this.moveTo = { x: effect.x, y: -effect.y }
+        return
+      case 'turn':
+        this.turnFrom = this.heading
+        this.turnTo = this.heading + effect.angle
+        return
+      case 'heading':
+        this.turnFrom = this.heading
+        this.turnTo = effect.angle
+        return
+      case 'circle':
+        this.circleProgress = 0
+        return
+      case 'say':
+        this.bubble = effect.text
+        return
+      default:
+        return
+    }
   }
 
   /** 효과를 즉시(끝난 상태로) 반영 */
@@ -226,24 +281,69 @@ export class TurtlePlayer {
         this.bubble = effect.text
         return
       case 'turn':
-        this.heading = this.turnFrom + effect.angle
+      case 'heading':
+        this.heading = this.turnTo
         return
-      case 'move': {
-        const rad = (this.heading * Math.PI) / 180
-        const endX = this.moveFrom.x + Math.sin(rad) * effect.dist
-        const endY = this.moveFrom.y - Math.cos(rad) * effect.dist
-        this.x = endX
-        this.y = endY
-        this.noteExtent(endX, endY)
+      case 'move':
+      case 'goto': {
+        const end = this.moveTo
         if (this.penDown) {
-          this.segments.push({
+          this.shapes.push({
+            type: 'line',
             x1: this.moveFrom.x, y1: this.moveFrom.y,
-            x2: endX, y2: endY,
+            x2: end.x, y2: end.y,
             color: this.color, width: this.width,
           })
         }
+        this.x = end.x
+        this.y = end.y
+        this.noteExtent(end.x, end.y)
+        this.addFillPoint(end.x, end.y)
         return
       }
+      case 'circle': {
+        this.shapes.push({
+          type: 'circle',
+          x: this.x, y: this.y, radius: effect.radius,
+          color: this.color, width: this.width,
+          filled: this.fillPoints !== null,
+        })
+        this.noteExtent(this.x, this.y, effect.radius)
+        this.circleProgress = 0
+        return
+      }
+      case 'dot': {
+        const size = effect.size > 0 ? effect.size : Math.max(8, this.width * 2 + 4)
+        this.shapes.push({ type: 'dot', x: this.x, y: this.y, size, color: this.color })
+        this.noteExtent(this.x, this.y, size / 2)
+        return
+      }
+      case 'write': {
+        this.shapes.push({ type: 'text', x: this.x, y: this.y, text: effect.text, color: this.color })
+        this.noteExtent(this.x, this.y, 40)
+        return
+      }
+      case 'fill': {
+        if (effect.start) {
+          this.fillPoints = [{ x: this.x, y: this.y }]
+        } else if (this.fillPoints) {
+          if (this.fillPoints.length >= 3) {
+            // 색칠은 선 아래에 깔리도록 맨 앞에 넣는다
+            this.shapes.unshift({ type: 'fill', points: this.fillPoints, color: this.color })
+          }
+          this.fillPoints = null
+        }
+        return
+      }
+      case 'visible':
+        this.shown = effect.shown
+        return
+      case 'clear':
+        this.shapes = []
+        this.fillPoints = null
+        this.bubble = null
+        this.extent = 0
+        return
     }
   }
 
@@ -256,7 +356,7 @@ export class TurtlePlayer {
       const effect = this.effects[this.index]
 
       // 즉시 처리되는 효과
-      if (effect.kind === 'print' || effect.kind === 'color' || effect.kind === 'pen' || effect.kind === 'width') {
+      if (!isTimed(effect)) {
         if (instantBudget-- <= 0) return
         cb.onLine(effect.line)
         this.applyInstant(effect, cb)
@@ -270,21 +370,19 @@ export class TurtlePlayer {
         // 프레임이 오래 멈춰 있었으면 너무 많이 따라잡지 않도록 제한
         if (this.effectStart === 0) this.effectStart = ts
         else this.effectStart = Math.max(this.effectStart, ts - CATCH_UP_MS)
-        cb.onLine(effect.line)
-        if (effect.kind === 'move') this.moveFrom = { x: this.x, y: this.y }
-        if (effect.kind === 'turn') this.turnFrom = this.heading
-        if (effect.kind === 'say') this.bubble = effect.text
+        this.beginEffect(effect, cb)
       }
       const dur = this.duration(effect)
       const t = Math.min(1, (ts - this.effectStart) / dur)
       const eased = 1 - (1 - t) * (1 - t) // ease-out
 
-      if (effect.kind === 'move') {
-        const rad = (this.heading * Math.PI) / 180
-        this.x = this.moveFrom.x + Math.sin(rad) * effect.dist * eased
-        this.y = this.moveFrom.y - Math.cos(rad) * effect.dist * eased
-      } else if (effect.kind === 'turn') {
-        this.heading = this.turnFrom + effect.angle * eased
+      if (effect.kind === 'move' || effect.kind === 'goto') {
+        this.x = this.moveFrom.x + (this.moveTo.x - this.moveFrom.x) * eased
+        this.y = this.moveFrom.y + (this.moveTo.y - this.moveFrom.y) * eased
+      } else if (effect.kind === 'turn' || effect.kind === 'heading') {
+        this.heading = this.turnFrom + (this.turnTo - this.turnFrom) * eased
+      } else if (effect.kind === 'circle') {
+        this.circleProgress = eased
       }
 
       if (t < 1) return // 다음 프레임에서 계속
@@ -305,6 +403,21 @@ export class TurtlePlayer {
   }
 
   // ---- 그리기 ----
+
+  /** 지금 화면에 보이는 그림을 그대로 PNG 데이터로 (작품 저장용) */
+  toPNG(): string | null {
+    const canvas = this.canvas
+    if (!canvas) return null
+    const out = document.createElement('canvas')
+    out.width = canvas.width
+    out.height = canvas.height
+    const octx = out.getContext('2d')
+    if (!octx) return null
+    octx.fillStyle = '#ffffff'
+    octx.fillRect(0, 0, out.width, out.height)
+    octx.drawImage(canvas, 0, 0)
+    return out.toDataURL('image/png')
+  }
 
   render() {
     const canvas = this.canvas
@@ -346,25 +459,69 @@ export class TurtlePlayer {
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
     const minWidth = 1.5 / scale
-    for (const s of this.segments) {
-      ctx.strokeStyle = s.color
-      ctx.lineWidth = Math.max(s.width, minWidth)
-      ctx.beginPath()
-      ctx.moveTo(s.x1, s.y1)
-      ctx.lineTo(s.x2, s.y2)
-      ctx.stroke()
+
+    for (const s of this.shapes) {
+      switch (s.type) {
+        case 'line':
+          ctx.strokeStyle = s.color
+          ctx.lineWidth = Math.max(s.width, minWidth)
+          ctx.beginPath()
+          ctx.moveTo(s.x1, s.y1)
+          ctx.lineTo(s.x2, s.y2)
+          ctx.stroke()
+          break
+        case 'fill':
+          ctx.fillStyle = s.color
+          ctx.beginPath()
+          ctx.moveTo(s.points[0].x, s.points[0].y)
+          for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y)
+          ctx.closePath()
+          ctx.fill()
+          break
+        case 'dot':
+          ctx.fillStyle = s.color
+          ctx.beginPath()
+          ctx.arc(s.x, s.y, s.size / 2, 0, Math.PI * 2)
+          ctx.fill()
+          break
+        case 'circle':
+          ctx.beginPath()
+          ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2)
+          if (s.filled) {
+            ctx.fillStyle = s.color
+            ctx.fill()
+          }
+          ctx.strokeStyle = s.color
+          ctx.lineWidth = Math.max(s.width, minWidth)
+          ctx.stroke()
+          break
+        case 'text':
+          ctx.fillStyle = s.color
+          ctx.font = '18px "Jua", "Gowun Dodum", sans-serif'
+          ctx.textBaseline = 'middle'
+          ctx.fillText(s.text, s.x + 6, s.y)
+          break
+      }
     }
 
-    // 지금 그리는 중인 선 (부분)
-    if (this.playing && this.penDown) {
+    // 지금 그리는 중인 것 (부분)
+    if (this.playing) {
       const effect = this.effects[this.index]
-      if (effect && effect.kind === 'move' && this.effectStart !== 0) {
-        ctx.strokeStyle = this.color
-        ctx.lineWidth = Math.max(this.width, minWidth)
-        ctx.beginPath()
-        ctx.moveTo(this.moveFrom.x, this.moveFrom.y)
-        ctx.lineTo(this.x, this.y)
-        ctx.stroke()
+      if (effect && this.effectStart !== 0) {
+        if ((effect.kind === 'move' || effect.kind === 'goto') && this.penDown) {
+          ctx.strokeStyle = this.color
+          ctx.lineWidth = Math.max(this.width, minWidth)
+          ctx.beginPath()
+          ctx.moveTo(this.moveFrom.x, this.moveFrom.y)
+          ctx.lineTo(this.x, this.y)
+          ctx.stroke()
+        } else if (effect.kind === 'circle' && this.circleProgress > 0) {
+          ctx.strokeStyle = this.color
+          ctx.lineWidth = Math.max(this.width, minWidth)
+          ctx.beginPath()
+          ctx.arc(this.x, this.y, effect.radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * this.circleProgress)
+          ctx.stroke()
+        }
       }
     }
     ctx.restore()
@@ -372,7 +529,7 @@ export class TurtlePlayer {
     // 거북이와 말풍선은 줄이지 않고 원래 크기로
     const px = cx + this.x * scale
     const py = cy + this.y * scale
-    this.drawTurtle(ctx, px, py, this.heading)
+    if (this.shown) this.drawTurtle(ctx, px, py, this.heading)
     if (this.bubble) this.drawBubble(ctx, px, py, this.bubble, w)
 
     // 축소해서 보여 주는 중이라고 알려 주기
@@ -453,6 +610,7 @@ export class TurtlePlayer {
   private drawBubble(ctx: CanvasRenderingContext2D, px: number, py: number, text: string, canvasW: number) {
     ctx.save()
     ctx.font = '15px "Jua", "Gowun Dodum", sans-serif'
+    ctx.textBaseline = 'alphabetic'
 
     const maxWidth = 170
     const maxLines = 6

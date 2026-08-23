@@ -21,10 +21,33 @@ function ok(name: string, cond: boolean, detail?: string) {
   }
 }
 
-function expectOutput(name: string, src: string, expected: string[]) {
-  const r = runProgram(src)
-  if (!r.ok) {
-    ok(name, false, `에러 발생: ${r.message} (줄 ${r.line})`)
+/** 질문(입력)이 나오면 준비한 답을 차례로 주면서 끝까지 실행한다 */
+function runAll(src: string, answers: string[] = []) {
+  const given: string[] = []
+  let randoms: number[] = []
+  let cursor = 0
+  for (let i = 0; i <= answers.length + 5; i++) {
+    const r = runProgram(src, { answers: given, randoms })
+    if (r.ok !== 'ask') return r
+    randoms = r.randoms
+    if (r.ask.retry) given.pop() // 숫자가 아니어서 되돌려진 답은 버린다
+    const next = answers[cursor++]
+    if (next === undefined) return r // 준비한 답이 모자람
+    given.push(next)
+  }
+  return runProgram(src, { answers: given, randoms })
+}
+
+function why(r: ReturnType<typeof runProgram>): string {
+  if (r.ok === false) return `에러: ${r.message} (줄 ${r.line})`
+  if (r.ok === 'ask') return `답을 더 물어봄: ${r.ask.question}`
+  return '성공'
+}
+
+function expectOutput(name: string, src: string, expected: string[], answers: string[] = []) {
+  const r = runAll(src, answers)
+  if (r.ok !== true) {
+    ok(name, false, why(r))
     return
   }
   const got = prints(r.effects)
@@ -33,7 +56,7 @@ function expectOutput(name: string, src: string, expected: string[]) {
 
 function expectError(name: string, src: string, msgPart: string, line?: number) {
   const r = runProgram(src)
-  if (r.ok) {
+  if (r.ok !== false) {
     ok(name, false, '에러가 나야 하는데 성공함')
     return
   }
@@ -44,7 +67,7 @@ function expectError(name: string, src: string, msgPart: string, line?: number) 
 /** 에러 메시지에 특정 낱말이 들어가면 안 될 때 */
 function expectErrorWithout(name: string, src: string, msgPart: string, forbidden: string, line?: number) {
   const r = runProgram(src)
-  if (r.ok) {
+  if (r.ok !== false) {
     ok(name, false, '에러가 나야 하는데 성공함')
     return
   }
@@ -85,9 +108,9 @@ console.log('\n[2] 거북이 그래픽')
 }
 {
   const r = runProgram(`캐릭터.색깔("노랑")\n캐릭터.펜올리기()\n캐릭터.뒤로(30)\n캐릭터.펜내리기()\n캐릭터.왼쪽(45)\n캐릭터.굵기(5)\n캐릭터.말하기("안녕!")`)
-  ok('모든 거북이 명령 동작', r.ok && r.effects.length === 7, r.ok ? undefined : r.message)
+  ok('모든 거북이 명령 동작', r.ok === true && r.effects.length === 7)
 }
-ok('영어 색 이름', runProgram(`turtle.color("red")\nturtle.forward(10)`).ok)
+ok('영어 색 이름', runProgram(`turtle.color("red")\nturtle.forward(10)`).ok === true)
 
 console.log('\n[3] 친절한 에러 (문법)')
 expectError('끝 빠짐', `만약 1 > 0 이면\n    출력("hi")`, "'끝'을 안 적은", 1)
@@ -124,7 +147,7 @@ expectError('조건에 숫자', `만약 3 이면\n    출력(1)\n끝`, '참이�
 expectError('캐릭터 이름 뺏기', `캐릭터 = 5`, '거북이 친구가 이미 쓰고 있어요', 1)
 expectError('반환 밖에서 사용', `반환 3`, '함수 안에서만', 1)
 expectError('안 만든 함수 호출', `그리기()`, '함수를 아직 안 만들었어요', 1)
-expectError('아직 없는 기능(입력)', `입력("?")`, '아직 없는 기능', 1)
+expectError('아직 없는 기능(멈춤)', `멈춤()`, '아직 없어요', 1)
 expectError('리스트 폭발 방지', `a = [1]\n반복 i = 1 부터 30\n    a = a + a\n끝`, '너무 커졌어요')
 
 console.log('\n[5] 영어 키워드 호환 (영어 단어 브리지)')
@@ -138,12 +161,12 @@ expectOutput('len/append/random 범위', `nums = [1, 2]\nappend(nums, 3)\nprint(
 expectOutput('한글+영어 섞어 쓰기', `나이 = 11\nif 나이 >= 10 이면\n    출력("고학년")\nend`, ['고학년'])
 {
   const r = runProgram(`turtle.color("빨강")\nfor i = 1 to 4\n    turtle.forward(100)\n    turtle.right(90)\nend\nturtle.say("done!")`)
-  if (r.ok) {
+  if (r.ok === true) {
     const moves = r.effects.filter((e) => e.kind === 'move')
     const turns = r.effects.filter((e) => e.kind === 'turn')
     ok('turtle.forward/right로 정사각형', moves.length === 4 && turns.length === 4 && r.effects.some((e) => e.kind === 'say'))
   } else {
-    ok('turtle.forward/right로 정사각형', false, r.message)
+    ok('turtle.forward/right로 정사각형', false, why(r))
   }
 }
 expectError('영어 코드도 친절한 에러', `if age >= 10 then\n    print("hi")`, "'끝'을 안 적은", 1)
@@ -160,12 +183,21 @@ console.log('\n[7] 미션 판정 (교재 데이터 기반)')
 {
   const toEnglish = (code: string) => {
     let out = code
-    for (const [ko, en] of Object.entries(KO_TO_EN)) out = out.replaceAll(ko, en)
+    // 긴 낱말부터 바꿔야 '숫자입력'이 '숫자input' 처럼 반쪽만 바뀌지 않는다
+    const pairs = Object.entries(KO_TO_EN).sort((a, b) => b[0].length - a[0].length)
+    for (const [ko, en] of pairs) out = out.replaceAll(ko, en)
     return out
   }
+  // 물어보는 미션에는 답을 미리 준비해 둔다 (숫자 맞히기는 1~25를 차례로 넣어 본다)
+  const NUMBERS = Array.from({ length: 25 }, (_, i) => String(i + 1))
+  const ANSWERS: Record<string, string[]> = {
+    'ask-input': ['민준', '10'],
+    'condition': ['7'],
+    'while-guess': NUMBERS,
+  }
   const passes = (m: (typeof MISSIONS)[number], code: string): boolean => {
-    const r = runProgram(code)
-    if (!r.ok) return false
+    const r = runAll(code, ANSWERS[m.id] ?? [])
+    if (r.ok !== true) return false
     return m.check({ code, effects: r.effects, starterCode: m.starterCode })
   }
 
@@ -173,7 +205,8 @@ console.log('\n[7] 미션 판정 (교재 데이터 기반)')
     const codedSteps = m.lesson.steps.filter((s) => s.code)
     const lastStep = codedSteps[codedSteps.length - 1].code!
     ok(`미션 ${m.order}: 시작 코드만 실행하면 미완료`, !passes(m, m.starterCode))
-    ok(`미션 ${m.order}: 모든 따라하기 단계가 실행됨`, codedSteps.every((s) => runProgram(s.code!).ok))
+    ok(`미션 ${m.order}: 모든 따라하기 단계가 실행됨`,
+      codedSteps.every((s) => runAll(s.code!, ANSWERS[m.id] ?? []).ok === true))
     ok(`미션 ${m.order}: 마지막 단계로 완료`, passes(m, lastStep))
     ok(`미션 ${m.order}: 예시 코드로 완료`, passes(m, m.exampleCode))
     ok(`미션 ${m.order}: 영어로 쓴 예시도 완료`, passes(m, toEnglish(m.exampleCode)))
@@ -191,15 +224,61 @@ console.log('\n[7] 미션 판정 (교재 데이터 기반)')
 
   // 교재 힌트에 적힌 코드가 실제로 돌아가야 한다
   ok('힌트: 반복 속 만약', runProgram(
-    '반복 i = 1 부터 4\n    만약 i % 2 == 0 이면\n        캐릭터.색깔("빨강")\n    아니면\n        캐릭터.색깔("파랑")\n    끝\n    캐릭터.앞으로(100)\n    캐릭터.오른쪽(90)\n끝').ok)
+    '반복 i = 1 부터 4\n    만약 i % 2 == 0 이면\n        캐릭터.색깔("빨강")\n    아니면\n        캐릭터.색깔("파랑")\n    끝\n    캐릭터.앞으로(100)\n    캐릭터.오른쪽(90)\n끝').ok === true)
   ok('힌트: 그리고 조건', runProgram(
-    '나이 = 10\n만약 나이 >= 8 그리고 나이 <= 13 이면\n    출력("초등학생이에요")\n끝').ok)
+    '나이 = 10\n만약 나이 >= 8 그리고 나이 <= 13 이면\n    출력("초등학생이에요")\n끝').ok === true)
   ok('힌트: 반환 함수', runProgram(
-    '함수 더하기(a, b)\n    반환 a + b\n끝\n출력(더하기(3, 4))').ok)
+    '함수 더하기(a, b)\n    반환 a + b\n끝\n출력(더하기(3, 4))').ok === true)
   ok('힌트: 추가/길이', runProgram(
-    '색깔들 = ["빨강"]\n추가(색깔들, "보라")\n출력("칸 수:", 길이(색깔들))').ok)
+    '색깔들 = ["빨강"]\n추가(색깔들, "보라")\n출력("칸 수:", 길이(색깔들))').ok === true)
   ok('힌트: 무작위 정답', runProgram(
-    '정답 = 무작위(1, 10)\n추측 = 5\n만약 추측 == 정답 이면\n    출력("맞았어요")\n아니면\n    출력("아니에요")\n끝').ok)
+    '정답 = 무작위(1, 10)\n추측 = 5\n만약 추측 == 정답 이면\n    출력("맞았어요")\n아니면\n    출력("아니에요")\n끝').ok === true)
+}
+
+console.log('\n[8] 물어보기(입력)')
+expectOutput('입력으로 받은 답 쓰기', `이름 = 입력("이름이 뭐예요?")\n출력("안녕", 이름)`, ['이름이 뭐예요? ▸ 민준', '안녕 민준'], ['민준'])
+expectOutput('숫자입력은 계산에 쓸 수 있음', `나이 = 숫자입력("몇 살?")\n출력(나이 + 1)`, ['몇 살? ▸ 10', '11'], ['10'])
+expectOutput('영어 input 도 동작', `name = input("name?")\nprint(name)`, ['name? ▸ Minjun', 'Minjun'], ['Minjun'])
+expectOutput('여러 번 물어보기', `가 = 숫자입력("첫 수?")\n나 = 숫자입력("둘째 수?")\n출력(가 + 나)`, ['첫 수? ▸ 3', '둘째 수? ▸ 4', '7'], ['3', '4'])
+{
+  // 숫자가 아닌 답을 주면 다시 물어본다
+  const r1 = runProgram(`나이 = 숫자입력("몇 살?")\n출력(나이)`, { answers: ['열살'] })
+  ok('숫자입력에 글자를 주면 다시 물어봄', r1.ok === 'ask' && !!r1.ask.retry)
+  const r2 = runAll(`나이 = 숫자입력("몇 살?")\n출력(나이)`, ['열살', '10'])
+  ok('다시 물어본 뒤 숫자를 주면 진행', r2.ok === true && prints(r2.effects).includes('10'))
+}
+{
+  // 무작위는 다시 실행해도 같은 값이 나와야 (질문 재생 중 그림이 바뀌지 않도록)
+  const first = runProgram(`정답 = 무작위(1, 1000)\n이름 = 입력("이름?")\n출력(정답)`)
+  ok('질문 전 무작위 값이 기록됨', first.ok === 'ask' && first.randoms.length === 1)
+  if (first.ok === 'ask') {
+    const second = runProgram(`정답 = 무작위(1, 1000)\n이름 = 입력("이름?")\n출력(정답)`, { answers: ['민준'], randoms: first.randoms })
+    ok('다시 실행해도 같은 무작위 값', second.ok === true && prints(second.effects).includes(String(first.randoms[0])))
+  } else {
+    ok('다시 실행해도 같은 무작위 값', false)
+  }
+}
+expectError('입력에 인자를 두 개 주면 안내', `입력("가", "나")`, '물어볼 말 하나만', 1)
+
+console.log('\n[9] 새 거북이 명령')
+{
+  const r = runProgram(`캐릭터.집으로()\n캐릭터.이동(50, 80)\n캐릭터.방향(90)\n캐릭터.원(30)\n캐릭터.점찍기(10)\n캐릭터.채우기시작()\n캐릭터.앞으로(10)\n캐릭터.채우기끝()\n캐릭터.글쓰기("안녕")\n캐릭터.숨기기()\n캐릭터.보이기()\n캐릭터.지우기()`)
+  const kinds = r.ok === true ? r.effects.map((e) => e.kind) : []
+  ok('새 명령 12개가 모두 효과를 만듦',
+    kinds.join(',') === 'goto,heading,goto,heading,circle,dot,fill,move,fill,write,visible,visible,clear', kinds.join(','))
+}
+{
+  const r = runProgram(`turtle.home()\nturtle.goto(10, 20)\nturtle.circle(30)\nturtle.dot(5)\nturtle.write("hi")\nturtle.begin_fill()\nturtle.end_fill()\nturtle.hideturtle()`)
+  ok('영어 이름으로도 새 명령 사용 가능', r.ok === true && r.effects.length === 9,
+    r.ok === true ? r.effects.map((e) => e.kind).join(',') : why(r))
+}
+expectError('원의 반지름은 0보다 커야', `캐릭터.원(0)`, '0보다 큰', 1)
+expectError('이동은 숫자 두 개', `캐릭터.이동(10)`, '숫자 2개', 1)
+{
+  // 이동(x, y)의 y는 수학처럼 위쪽이 +
+  const r = runProgram(`캐릭터.이동(0, 100)`)
+  const g = r.ok === true ? (r.effects[0] as { x: number; y: number }) : null
+  ok('이동(0, 100)은 위쪽 100', !!g && g.x === 0 && g.y === 100)
 }
 
 console.log(`\n결과: ${pass}개 통과, ${fail}개 실패`)
