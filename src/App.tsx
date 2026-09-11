@@ -16,6 +16,7 @@ import type { AskRequest, Effect } from './lang/interpreter'
 import { getMission, MISSIONS } from './missions/missions'
 import { Emo } from './ui/emoji'
 import * as storage from './storage'
+import { ExperimentLab } from './components/ExperimentLab'
 
 // 공용 PC용: 주소 끝에 ?reset=1 을 붙여 열면 저장된 내용을 모두 지우고 새로 시작한다.
 // 교사용: ?teacher=1 을 붙이면 정답·지도안이 담긴 교사용 자료 버튼이 나타난다.
@@ -255,7 +256,24 @@ export default function App() {
 
   const handleCodeChange = useCallback((code: string) => {
     if (saveTimer.current) clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => storage.saveCode(missionIdRef.current, code), 300)
+    const id = missionIdRef.current
+    saveTimer.current = setTimeout(() => storage.saveCode(id, code), 300)
+  }, [])
+
+  useEffect(() => {
+    const flush = () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current)
+      const editor = editorRef.current
+      if (editor) storage.saveCode(missionIdRef.current, editor.getCode())
+    }
+    const onHidden = () => { if (document.visibilityState === 'hidden') flush() }
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', onHidden)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', onHidden)
+      if (saveTimer.current) clearTimeout(saveTimer.current)
+    }
   }, [])
 
   const handleSelectMission = useCallback((id: string) => {
@@ -281,6 +299,7 @@ export default function App() {
   }, [player])
 
   const loadCode = useCallback((code: string) => {
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null }
     editorRef.current?.setCode(code)
     storage.saveCode(missionIdRef.current, code)
     editorRef.current?.focus()
@@ -361,6 +380,15 @@ export default function App() {
         onRun={handleRun}
         onOpenProgress={() => setProgressOpen(true)}
       />
+
+      <ExperimentLab onLoad={(code) => {
+        if (busyRef.current || running) { setAnnouncement('실행을 마친 뒤 예제를 넣어 주세요.'); return false }
+        loadCode(code)
+        setRunState('idle')
+        setJustBadge(null)
+        setAnnouncement('실험 코드를 넣었어요. 실행하기를 눌러 결과를 확인하세요.')
+        return true
+      }} />
 
       <main className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2 sm:p-3 lg:flex-row lg:overflow-hidden">
         {/* 좌측: 미션 교재 + 코드 에디터 (~45%) */}

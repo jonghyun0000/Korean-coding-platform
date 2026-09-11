@@ -5,6 +5,15 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+button:focus-visible, summary:focus-visible, input:focus-visible {
+  outline: 3px solid #7c3aed;
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
 .font-jua {
   font-family: "Jua", "Gowun Dodum", sans-serif;
 }
